@@ -91,12 +91,13 @@ export default function AdvisorDashboard({
   };
 
   const loadBookings = async () => {
+    // Join with profiles to get the user's name
     const { data } = await supabase
       .from("bookings")
-      .select("*")
+      .select("*, profiles:user_id (display_name)")
       .eq("advisor_id", userId)
       .order("booking_date", { ascending: true });
-    if (data) setBookings(data as Booking[]);
+    if (data) setBookings(data as any[]);
   };
 
   useEffect(() => {

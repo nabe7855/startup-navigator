@@ -31,49 +31,98 @@ export default function StartupNavigator() {
   const [authChecking, setAuthChecking] = useState(true);
 
   useEffect(() => {
-    // Check active session on mount
-    const checkUser = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session) {
-        await fetchUserProfile(session.user.id, session.user.email!);
+    let mounted = true;
+
+    // Consolidate auth logic
+    const initializeAuth = async () => {
+      try {
+        // Initial session check
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (session && mounted) {
+          await fetchUserProfile(session.user.id, session.user.email!);
+        }
+
+        if (mounted) {
+          setAuthChecking(false);
+        }
+      } catch (err) {
+        console.error("Auth init error:", err);
+        if (mounted) {
+          setAuthChecking(false);
+        }
       }
-      setAuthChecking(false);
     };
 
-    checkUser();
+    initializeAuth();
+
+    // Safety timeout: stop loading after 8 seconds no matter what
+    const timeout = setTimeout(() => {
+      if (mounted && authChecking) {
+        console.warn("Auth check timed out, forcing load stop");
+        setAuthChecking(false);
+      }
+    }, 8000);
 
     // Listen to auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event: any, session) => {
+      console.log("Auth event:", event);
+      if (!mounted) return;
+
       if (session) {
         await fetchUserProfile(session.user.id, session.user.email!);
       } else {
         setUser(null);
       }
+
+      // If we got an event, we definitely checked auth
+      setAuthChecking(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      clearTimeout(timeout);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const fetchUserProfile = async (userId: string, email: string) => {
+    console.log("Fetching profile for:", userId);
+
+    // Create a promise that rejects after 5 seconds
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Profile fetch timeout")), 5000),
+    );
+
     try {
-      const { data } = await supabase
+      const fetchPromise = supabase
         .from("profiles")
         .select("role")
         .eq("id", userId)
         .single();
 
+      const { data, error } = (await Promise.race([
+        fetchPromise,
+        timeoutPromise,
+      ])) as any;
+
+      if (error) {
+        console.warn("Profile fetch error (using fallback):", error);
+      }
+
+      console.log("Setting user with role:", data?.role || "user");
       setUser({
         email,
         id: userId,
         role: data?.role || "user",
       });
     } catch (e) {
-      console.error(e);
-      // Fallback
+      console.error("fetchUserProfile failed:", e);
+      // Fallback: assume 'user' role so they can at least see the dashboard
       setUser({ email, id: userId, role: "user" });
     }
   };
@@ -158,40 +207,75 @@ export default function StartupNavigator() {
   const handleStepBack = () => setStep((s) => Math.max(s - 1, 1));
 
   // Booking states
-  const [selectedDate, setSelectedDate] = useState<number | null>(null);
+  const [selectedDateStr, setSelectedDateStr] = useState<string | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  const [selectedAdvisorId, setSelectedAdvisorId] = useState<string | null>(
+    null,
+  );
 
-  // Mock calendar for March 2026 (Starts on Sunday/1st)
+  const [availableHours, setAvailableHours] = useState<any[]>([]);
+  const [advisors, setAdvisors] = useState<any[]>([]);
+  const [advisorSchedules, setAdvisorSchedules] = useState<any[]>([]);
+  const [existingBookings, setExistingBookings] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (view === "booking") {
+      void loadBookingData();
+    }
+  }, [view]);
+
+  const loadBookingData = async () => {
+    setLoading(true);
+    try {
+      // 1. Load Admin set operating dates
+      const { data: h } = await supabase.from("operating_hours").select("*");
+      setAvailableHours(h || []);
+
+      // 2. Load Advisors
+      const { data: p } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("role", "advisor");
+      setAdvisors(p || []);
+
+      // 3. Load Advisor Schedules
+      const { data: s } = await supabase.from("advisor_schedules").select("*");
+      setAdvisorSchedules(s || []);
+
+      // 4. Load Existing Bookings
+      const { data: b } = await supabase.from("bookings").select("*");
+      setExistingBookings(b || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBook = async () => {
+    if (!selectedDateStr || !selectedSlot || !selectedAdvisorId || !user)
+      return;
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("bookings").insert({
+        user_id: user.id,
+        advisor_id: selectedAdvisorId,
+        booking_date: selectedDateStr,
+        start_time: selectedSlot,
+        status: "confirmed",
+      });
+      if (error) throw error;
+      alert("予約が完了しました！");
+      setView("dashboard");
+    } catch (e: any) {
+      alert("予約に失敗しました: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const calendarDays = Array.from({ length: 31 }, (_, i) => i + 1);
   const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
-
-  const allSlots = [
-    "10:00",
-    "11:00",
-    "12:00",
-    "13:00",
-    "14:00",
-    "15:00",
-    "16:00",
-    "17:00",
-  ];
-
-  // Mock booked data: { day: [booked hours] }
-  const bookedData: Record<number, string[]> = {
-    12: ["10:00", "14:00"],
-    15: ["11:00", "15:00", "16:00"],
-    18: ["13:00"],
-    20: [
-      "10:00",
-      "11:00",
-      "12:00",
-      "13:00",
-      "14:00",
-      "15:00",
-      "16:00",
-      "17:00",
-    ], // Full day booked
-  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -575,107 +659,167 @@ export default function StartupNavigator() {
             <header className="content-header fade-in">
               <div className="title-area">
                 <h1>セッション予約</h1>
-                <p className="welcome">ご希望の日時を選択してください。</p>
+                <p className="description">
+                  {loading
+                    ? "データを取得中..."
+                    : "アドバイザーの空き状況から日時を選択してください。"}
+                </p>
               </div>
               <button className="text-btn" onClick={() => setView("dashboard")}>
-                ダッシュボードに戻る
+                戻る
               </button>
             </header>
-
-            <div className="booking-grid">
-              {/* Date Selection */}
-              {/* Date Selection - Calendar Style */}
-              <div className="glass-card booking-card date-section animate-in-up">
-                <div className="calendar-header">
-                  <h3>2026年 3月</h3>
-                  <p className="calendar-subtext">日付を選択してください</p>
-                </div>
-
-                <div className="calendar-days-grid">
-                  {weekDays.map((wd) => (
-                    <div key={wd} className="weekday-label">
-                      {wd}
-                    </div>
-                  ))}
-                  {calendarDays.map((d) => (
-                    <button
-                      key={d}
-                      className={`date-cell ${selectedDate === d ? "active" : ""}`}
-                      onClick={() => {
-                        setSelectedDate(d);
-                        setSelectedSlot(null);
-                      }}
-                    >
-                      {d}
-                    </button>
-                  ))}
+            <div className="booking-layout">
+              {/* 1. Date Selection */}
+              <div className="booking-panel glass-card animate-in-up">
+                <h3>1. 日時を選択</h3>
+                <div className="available-dates-list">
+                  {availableHours.length === 0 ? (
+                    <p className="empty-hint">現在予約可能な日はありません。</p>
+                  ) : (
+                    availableHours.map((h) => (
+                      <button
+                        key={h.id}
+                        className={`date-option-card ${selectedDateStr === h.date ? "active" : ""}`}
+                        onClick={() => {
+                          setSelectedDateStr(h.date);
+                          setSelectedSlot(null);
+                          setSelectedAdvisorId(null);
+                        }}
+                      >
+                        <span className="date-val">{h.date}</span>
+                        <span className="time-range">
+                          {h.start_time} - {h.end_time}
+                        </span>
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
 
-              {/* Time Selection */}
+              {/* 2. Advisor & Slot Selection */}
               <div
-                className="glass-card booking-card time-section animate-in-up"
+                className="booking-panel glass-card animate-in-up"
                 style={{ animationDelay: "0.1s" }}
               >
-                <h3>予約可能枠</h3>
-                {!selectedDate ? (
-                  <p className="empty-state">先に日付を選択してください。</p>
+                <h3>2. 担当者と時間を選択</h3>
+                {!selectedDateStr ? (
+                  <p className="empty-hint text-center py-20">
+                    先に日付を選択してください。
+                  </p>
                 ) : (
-                  <div className="slots-grid">
-                    {allSlots.map((s) => {
-                      const isBooked = bookedData[selectedDate]?.includes(s);
+                  <div className="advisors-slots-area">
+                    {advisors.length === 0 && (
+                      <p className="empty-hint">担当者が登録されていません。</p>
+                    )}
+                    {advisors.map((advisor) => {
+                      // Find advisor's schedule for this day of week
+                      const dayOfWeek = new Date(selectedDateStr).getDay();
+                      const schedule = advisorSchedules.find(
+                        (s) =>
+                          s.advisor_id === advisor.id &&
+                          s.day_of_week === dayOfWeek,
+                      );
+
+                      if (!schedule) return null;
+
+                      // Generate hourly slots
+                      const startHour = parseInt(
+                        schedule.start_time.split(":")[0],
+                      );
+                      const endHour = parseInt(schedule.end_time.split(":")[0]);
+                      const slots = [];
+                      for (let i = startHour; i < endHour; i++) {
+                        slots.push(`${i}:00`);
+                      }
+
                       return (
-                        <button
-                          key={s}
-                          className={`slot-btn ${selectedSlot === s ? "active" : ""} ${isBooked ? "booked" : ""}`}
-                          onClick={() => !isBooked && setSelectedSlot(s)}
-                          disabled={isBooked}
-                        >
-                          {s}
-                          {isBooked && <span className="booked-mark">×</span>}
-                        </button>
+                        <div key={advisor.id} className="advisor-slots-row">
+                          <div className="advisor-mini-profile">
+                            <div className="avatar-xs">
+                              {advisor.display_name?.[0] || "?"}
+                            </div>
+                            <span className="advisor-name">
+                              {advisor.display_name}
+                            </span>
+                          </div>
+                          <div className="slots-strip">
+                            {slots.map((s) => {
+                              const isBooked = existingBookings.some(
+                                (b) =>
+                                  b.advisor_id === advisor.id &&
+                                  b.booking_date === selectedDateStr &&
+                                  b.start_time.startsWith(s) &&
+                                  b.status === "confirmed",
+                              );
+                              const isSelected =
+                                selectedSlot === s &&
+                                selectedAdvisorId === advisor.id;
+
+                              return (
+                                <button
+                                  key={s}
+                                  className={`mini-slot-btn ${isBooked ? "booked" : isSelected ? "active" : ""}`}
+                                  disabled={isBooked}
+                                  onClick={() => {
+                                    setSelectedSlot(s);
+                                    setSelectedAdvisorId(advisor.id);
+                                  }}
+                                >
+                                  {s}
+                                  {isBooked && (
+                                    <span className="booked-x">×</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
                 )}
               </div>
 
-              {/* Confirmation */}
+              {/* 3. Final Confirmation */}
               <div
-                className="glass-card booking-card confirm-section animate-in-up"
+                className="booking-panel glass-card animate-in-up"
                 style={{ animationDelay: "0.2s" }}
               >
-                <h3>予約内容の確認</h3>
-                <div className="summary-details">
-                  <div className="detail-item">
-                    <span className="label">カテゴリー:</span>
-                    <span className="val">事業計画ブラッシュアップ</span>
+                <h3>3. 予約を確定</h3>
+                <div className="final-summary">
+                  <div className="summary-item">
+                    <label>日付</label>
+                    <span>{selectedDateStr || "未選択"}</span>
                   </div>
-                  <div className="detail-item">
-                    <span className="label">日付:</span>
-                    <span className="val">
-                      {selectedDate ? `2026年3月${selectedDate}日` : "---"}
+                  <div className="summary-item">
+                    <label>時間</label>
+                    <span>{selectedSlot || "未選択"}</span>
+                  </div>
+                  <div className="summary-item">
+                    <label>担当</label>
+                    <span>
+                      {advisors.find((a) => a.id === selectedAdvisorId)
+                        ?.display_name || "未選択"}
                     </span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="label">時間:</span>
-                    <span className="val">{selectedSlot || "---"}</span>
                   </div>
                 </div>
                 <button
-                  className="primary-btn launch-btn"
-                  disabled={!selectedDate || !selectedSlot}
-                  onClick={() => {
-                    alert(
-                      `2026年3月${selectedDate}日 ${selectedSlot} で予約が完了しました。`,
-                    );
-                    setView("dashboard");
-                  }}
+                  className="primary-btn launch-btn w-full mt-20"
+                  disabled={
+                    !selectedDateStr ||
+                    !selectedSlot ||
+                    !selectedAdvisorId ||
+                    loading
+                  }
+                  onClick={handleBook}
                 >
-                  予約を確定する
+                  {loading ? "予約中..." : "この内容で予約する"}
                 </button>
               </div>
             </div>
+            <div className="booking-layout-placeholder" />{" "}
+            {/* Removed redundant style tag */}
           </div>
         ) : (
           <div className="wizard-view">
@@ -2156,6 +2300,137 @@ export default function StartupNavigator() {
         .result-card .price {
           font-size: 1.5rem;
           font-weight: 800;
+        }
+
+        .booking-layout {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          padding-bottom: 100px;
+        }
+        .available-dates-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          margin-top: 12px;
+        }
+        .date-option-card {
+          padding: 12px 20px;
+          border-radius: 12px;
+          border: 1px solid var(--border-light);
+          background: white;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+        .date-option-card:hover {
+          border-color: var(--primary);
+          background: var(--primary-soft);
+        }
+        .date-option-card.active {
+          background: var(--primary);
+          border-color: var(--primary);
+          color: white;
+        }
+        .date-val {
+          font-weight: 800;
+          font-size: 1.1rem;
+        }
+        .time-range {
+          font-size: 0.75rem;
+          opacity: 0.8;
+        }
+        .advisors-slots-area {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          margin-top: 16px;
+        }
+        .advisor-slots-row {
+          background: #f8fafc;
+          padding: 12px;
+          border-radius: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .advisor-mini-profile {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .avatar-xs {
+          width: 24px;
+          height: 24px;
+          background: var(--primary-soft);
+          color: var(--primary);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.7rem;
+          font-weight: 800;
+        }
+        .advisor-name {
+          font-weight: 700;
+          font-size: 0.9rem;
+        }
+        .slots-strip {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .mini-slot-btn {
+          padding: 6px 12px;
+          border-radius: 8px;
+          border: 1px solid #e2e8f0;
+          background: white;
+          font-size: 0.85rem;
+          font-weight: 600;
+          cursor: pointer;
+          position: relative;
+        }
+        .mini-slot-btn:hover:not(:disabled) {
+          border-color: var(--accent);
+          color: var(--accent);
+        }
+        .mini-slot-btn.active {
+          background: var(--accent);
+          color: white;
+          border-color: var(--accent);
+        }
+        .mini-slot-btn.booked {
+          background: #f1f5f9;
+          color: #cbd5e1;
+          cursor: not-allowed;
+        }
+        .booked-x {
+          font-size: 10px;
+          color: #ef4444;
+          margin-left: 4px;
+        }
+        .final-summary {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          background: #f1f5f9;
+          padding: 16px;
+          border-radius: 12px;
+        }
+        .summary-item {
+          display: flex;
+          justify-content: space-between;
+          font-size: 0.9rem;
+        }
+        .summary-item label {
+          color: var(--text-dim);
+          font-weight: 600;
+        }
+        .summary-item span {
+          font-weight: 800;
+          color: var(--secondary);
         }
 
         @keyframes animateUp {

@@ -79,37 +79,36 @@ export default function AdminDashboard({
   };
 
   const inviteAdvisor = async () => {
-    if (!inviteEmail || !invitePassword)
-      return alert("メールアドレスとパスワードを入力してください");
+    if (!inviteEmail) return alert("メールアドレスを入力してください");
     setLoading(true);
-    // Create auth account
-    const { data, error } = (await supabase.auth.admin?.createUser)
-      ? // Admin API not available client-side, use signUp
-        await supabase.auth.signUp({
-          email: inviteEmail,
-          password: invitePassword,
-          options: { data: { full_name: inviteEmail.split("@")[0] } },
-        })
-      : await supabase.auth.signUp({
-          email: inviteEmail,
-          password: invitePassword,
-          options: { data: { full_name: inviteEmail.split("@")[0] } },
-        });
 
-    if (error) {
-      alert(error.message);
-    } else if (data.user) {
-      // Update role to advisor
-      await supabase
-        .from("profiles")
-        .update({ role: "advisor" })
-        .eq("id", data.user.id);
-      alert(`${inviteEmail} を担当者として登録しました。`);
-      setInviteEmail("");
-      setInvitePassword("");
-      loadAdvisors();
+    try {
+      // 招待テーブルにメールアドレスを追加
+      const { error } = await supabase
+        .from("invitations")
+        .insert([{ email: inviteEmail, role: "advisor" }]);
+
+      if (error) {
+        if (error.code === "23505") {
+          alert("このメールアドレスは既に招待されています。");
+        } else {
+          throw error;
+        }
+      } else {
+        alert(
+          `${inviteEmail} を担当者として招待しました。\n担当者の方はこのメールアドレスで新規登録を行ってください。`,
+        );
+        setInviteEmail("");
+        setInvitePassword("");
+      }
+    } catch (error: unknown) {
+      console.error(error);
+      const msg =
+        error instanceof Error ? error.message : "エラーが発生しました。";
+      alert(msg);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
