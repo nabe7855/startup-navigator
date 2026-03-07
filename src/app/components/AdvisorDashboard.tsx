@@ -86,6 +86,10 @@ export default function AdvisorDashboard({
   });
   const [operatingHours, setOperatingHours] = useState<any[]>([]);
 
+  const adminSlot = selectedDate
+    ? operatingHours.find((h) => h.date === selectedDate)
+    : null;
+
   const loadProfile = async () => {
     const { data } = await supabase
       .from("profiles")
@@ -1540,8 +1544,17 @@ export default function AdvisorDashboard({
                             style={{ left: `${(i / 24) * 100}%` }}
                           />
                         ))}
+                        {adminSlot && (
+                          <div
+                            className="range-highlight admin-range"
+                            style={{
+                              left: `${(parseInt(adminSlot.start_time) / 24) * 100}%`,
+                              width: `${((parseInt(adminSlot.end_time) - parseInt(adminSlot.start_time)) / 24) * 100}%`,
+                            }}
+                          />
+                        )}
                         <div
-                          className="range-highlight"
+                          className="range-highlight advisor-range"
                           style={{
                             left: `${(parseInt(newHour.start_time) / 24) * 100}%`,
                             width: `${((parseInt(newHour.end_time) - parseInt(newHour.start_time)) / 24) * 100}%`,
@@ -1917,6 +1930,321 @@ export default function AdvisorDashboard({
             opacity: 1;
             transform: translateX(0);
           }
+        }
+
+        /* ===== Calendar Layout ===== */
+        .hours-view {
+          width: 100%;
+        }
+        .hours-grid-layout {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 24px;
+          align-items: start;
+        }
+        @media (min-width: 900px) {
+          .hours-grid-layout {
+            grid-template-columns: 1fr 340px;
+          }
+        }
+        .calendar-panel {
+          padding: 24px;
+          background: white;
+        }
+        .calendar-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 24px;
+        }
+        .icon-btn {
+          background: none;
+          border: none;
+          color: var(--text-dim);
+          cursor: pointer;
+          padding: 8px;
+          border-radius: 50%;
+          transition: background 0.2s;
+        }
+        .icon-btn:hover {
+          background: var(--bg-soft);
+          color: var(--primary);
+        }
+        .current-month {
+          font-weight: 800;
+          font-size: 1.1rem;
+          color: var(--secondary);
+        }
+        .calendar-body {
+        }
+        .weekday-header {
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          text-align: center;
+          border-bottom: 1px solid #f1f5f9;
+          padding-bottom: 8px;
+          margin-bottom: 8px;
+        }
+        .weekday {
+          font-size: 0.75rem;
+          font-weight: 800;
+          color: #94a3b8;
+        }
+        .days-grid {
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          gap: 4px;
+        }
+        .day-cell {
+          aspect-ratio: 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all 0.2s;
+          position: relative;
+          font-size: 0.9rem;
+        }
+        .day-cell:hover {
+          background: var(--bg-soft);
+        }
+        .day-cell.selected {
+          background: var(--primary);
+          color: white;
+        }
+        .day-cell.has-config {
+          background: var(--primary-soft);
+          color: var(--primary);
+        }
+        .day-cell.selected.has-config {
+          background: var(--primary);
+          color: white;
+        }
+        .day-cell.muted {
+          opacity: 0.15;
+          cursor: default;
+          pointer-events: none;
+        }
+        .day-cell.admin-closed {
+          opacity: 0.3;
+          cursor: not-allowed;
+          pointer-events: none;
+        }
+        .day-num {
+          font-weight: 700;
+          font-size: 0.95rem;
+        }
+        .config-hint {
+          font-size: 0.55rem;
+          font-weight: 800;
+          margin-top: 2px;
+          line-height: 1;
+        }
+
+        /* ===== Settings Panel ===== */
+        .settings-panel {
+          padding: 24px;
+          background: white;
+          min-height: 400px;
+          border-radius: 16px;
+        }
+        .empty-selection {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 300px;
+          color: #cbd5e1;
+          text-align: center;
+          gap: 16px;
+        }
+        .setting-content h3 {
+          font-size: 1.1rem;
+          font-weight: 800;
+          color: var(--secondary);
+          margin-bottom: 8px;
+        }
+        .setting-hint {
+          font-size: 0.8rem;
+          color: #64748b;
+          margin-bottom: 24px;
+          line-height: 1.7;
+        }
+        .animate-in {
+          animation: fadeInUp 0.3s ease;
+        }
+        @keyframes fadeInUp {
+          from {
+            opacity: 0;
+            transform: translateY(8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        /* ===== Time Range Drag Bar ===== */
+        .time-range-picker {
+          margin-bottom: 32px;
+        }
+        .time-labels {
+          display: flex;
+          justify-content: space-between;
+          font-size: 0.65rem;
+          color: #94a3b8;
+          margin-bottom: 6px;
+        }
+        .time-bar-container {
+          height: 48px;
+          background: #f1f5f9;
+          border-radius: 8px;
+          position: relative;
+          cursor: crosshair;
+          user-select: none;
+          overflow: hidden;
+        }
+        .time-tick {
+          position: absolute;
+          top: 0;
+          width: 1px;
+          height: 100%;
+          background: #e2e8f0;
+        }
+        .range-highlight {
+          position: absolute;
+          border-radius: 4px;
+          transition:
+            left 0.05s,
+            width 0.05s;
+        }
+        .admin-range {
+          top: 0;
+          height: 50%;
+          background: #3b82f6;
+          opacity: 0.6;
+        }
+        .advisor-range {
+          top: 50%;
+          height: 50%;
+          background: #ef4444;
+          opacity: 0.8;
+        }
+        .time-value-display {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-top: 16px;
+          justify-content: center;
+        }
+        .t-box {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          background: var(--bg-soft);
+          border-radius: 8px;
+          padding: 10px 20px;
+          min-width: 80px;
+        }
+        .t-box span {
+          font-size: 0.7rem;
+          color: #94a3b8;
+          font-weight: 700;
+        }
+        .t-box strong {
+          font-size: 1.2rem;
+          font-weight: 900;
+          color: var(--secondary);
+        }
+        .t-separator {
+          font-size: 1.3rem;
+          color: #cbd5e1;
+          font-weight: 300;
+        }
+        .actions {
+          margin-top: 16px;
+        }
+        .glass-card {
+          background: white;
+          border-radius: 16px;
+          box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+        }
+        .primary-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 12px 24px;
+          background: var(--primary);
+          color: white;
+          border: none;
+          border-radius: 10px;
+          font-weight: 700;
+          font-size: 0.95rem;
+          cursor: pointer;
+          transition: all 0.2s;
+          width: 100%;
+          justify-content: center;
+        }
+        .primary-btn:hover:not(:disabled) {
+          opacity: 0.9;
+          transform: translateY(-1px);
+        }
+        .primary-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+        .text-btn {
+          background: none;
+          border: none;
+          cursor: pointer;
+          font-size: 0.9rem;
+          padding: 10px;
+          border-radius: 8px;
+          transition: background 0.2s;
+          font-weight: 600;
+          width: 100%;
+        }
+        .text-btn.danger {
+          color: #ef4444;
+        }
+        .text-btn.danger:hover {
+          background: #fef2f2;
+        }
+        .w-full {
+          width: 100%;
+        }
+        .mt-4 {
+          margin-top: 16px;
+        }
+        .p-8 {
+          padding: 32px;
+        }
+        .mb-4 {
+          margin-bottom: 16px;
+        }
+        .input-field {
+          width: 100%;
+          padding: 10px 14px;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          font-size: 0.95rem;
+          outline: none;
+          transition: border-color 0.2s;
+          background: white;
+          box-sizing: border-box;
+        }
+        .input-field:focus {
+          border-color: var(--primary);
+          box-shadow: 0 0 0 2px var(--primary-soft);
+        }
+        .form-group label {
+          display: block;
+          font-size: 0.85rem;
+          font-weight: 700;
+          color: #64748b;
+          margin-bottom: 6px;
         }
       `}</style>
     </div>
