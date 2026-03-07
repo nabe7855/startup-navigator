@@ -1300,48 +1300,54 @@ export default function AdvisorDashboard({
         {tab === "schedule" && (
           <div className="glass-card p-8">
             <h1 className="advisor-title">シフト設定</h1>
-            {DAYS.map((day, i) => (
-              <div key={i} className="flex-row">
-                <label className="toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={schedules[i]?.enabled}
-                    onChange={(e) =>
-                      setSchedules({
-                        ...schedules,
-                        [i]: { ...schedules[i], enabled: e.target.checked },
-                      })
-                    }
-                  />
-                  {day}曜日
-                </label>
-                {schedules[i]?.enabled && (
-                  <div className="time-select">
+            <div className="shift-list">
+              {DAYS.map((day, i) => (
+                <div key={i} className="flex-row">
+                  <label className="toggle-label">
                     <input
-                      type="time"
-                      value={schedules[i].start}
+                      type="checkbox"
+                      checked={schedules[i]?.enabled}
                       onChange={(e) =>
                         setSchedules({
                           ...schedules,
-                          [i]: { ...schedules[i], start: e.target.value },
+                          [i]: { ...schedules[i], enabled: e.target.checked },
                         })
                       }
                     />
-                    〜
-                    <input
-                      type="time"
-                      value={schedules[i].end}
-                      onChange={(e) =>
-                        setSchedules({
-                          ...schedules,
-                          [i]: { ...schedules[i], end: e.target.value },
-                        })
-                      }
-                    />
-                  </div>
-                )}
-              </div>
-            ))}
+                    {day}曜日
+                  </label>
+                  {schedules[i]?.enabled && (
+                    <div className="time-select fade-in">
+                      <div className="time-input-wrap">
+                        <input
+                          type="time"
+                          value={schedules[i].start}
+                          onChange={(e) =>
+                            setSchedules({
+                              ...schedules,
+                              [i]: { ...schedules[i], start: e.target.value },
+                            })
+                          }
+                        />
+                      </div>
+                      <span className="time-separator">〜</span>
+                      <div className="time-input-wrap">
+                        <input
+                          type="time"
+                          value={schedules[i].end}
+                          onChange={(e) =>
+                            setSchedules({
+                              ...schedules,
+                              [i]: { ...schedules[i], end: e.target.value },
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
             <button
               className="primary-btn mt-6"
               onClick={saveSchedules}
@@ -1594,29 +1600,83 @@ export default function AdvisorDashboard({
           padding: 60px;
           color: #64748b;
         }
+        .shift-list {
+          display: flex;
+          flex-direction: column;
+          margin-top: 16px;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          background: #fff;
+          overflow: hidden;
+        }
         .flex-row {
           display: flex;
           align-items: center;
           gap: 20px;
-          padding: 16px 0;
+          padding: 16px 24px;
           border-bottom: 1px solid #f1f5f9;
+          transition: background 0.2s;
+        }
+        .flex-row:last-child {
+          border-bottom: none;
+        }
+        .flex-row:hover {
+          background: #fafafa;
         }
         .toggle-label {
-          min-width: 100px;
-          font-weight: 700;
+          min-width: 120px;
+          font-weight: 800;
           display: flex;
-          gap: 8px;
+          align-items: center;
+          gap: 12px;
           cursor: pointer;
+          font-size: 1rem;
+          color: #334155;
+        }
+        .toggle-label input[type="checkbox"] {
+          width: 18px;
+          height: 18px;
+          cursor: pointer;
+          accent-color: var(--primary);
         }
         .time-select {
           display: flex;
-          gap: 8px;
+          gap: 16px;
           align-items: center;
+          animation: fadeIn 0.3s ease;
         }
-        .time-select input {
-          padding: 4px 8px;
-          border-radius: 4px;
+        .time-input-wrap {
+          display: inline-flex;
+        }
+        .time-select input[type="time"] {
+          padding: 8px 12px;
+          border-radius: 8px;
           border: 1px solid #cbd5e1;
+          font-family: var(--font-accent);
+          font-size: 0.95rem;
+          color: #334155;
+          width: 130px;
+          outline: none;
+          transition: border-color 0.2s;
+          background: white;
+        }
+        .time-select input[type="time"]:focus {
+          border-color: var(--primary);
+          box-shadow: 0 0 0 2px var(--primary-soft);
+        }
+        .time-separator {
+          color: #94a3b8;
+          font-weight: bold;
+        }
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+            transform: translateX(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
         }
       `}</style>
     </div>

@@ -249,8 +249,8 @@ export default function UserDashboard({
           </button>
         </div>
         <div className="profile-trigger">
-          <button className="logout-btn" onClick={onSignOut}>
-            <LogOut size={16} /> ログアウト
+          <button className="logout-btn side-logout" onClick={onSignOut}>
+            <LogOut size={16} /> <span>ログアウト</span>
           </button>
         </div>
       </nav>
@@ -2247,6 +2247,20 @@ export default function UserDashboard({
           }
           .section-title {
             font-size: 1.5rem;
+          }
+          .profile-trigger {
+            margin-top: auto;
+            margin-bottom: 24px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+          }
+          .side-logout {
+            flex-direction: column;
+            width: 60px;
+            padding: 10px 4px;
+            font-size: 0.65rem;
+            gap: 6px;
           }
         }
 
