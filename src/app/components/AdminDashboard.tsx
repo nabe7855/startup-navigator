@@ -5,6 +5,7 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
+  LogOut,
   Plus,
   Settings,
   Users,
@@ -269,8 +270,8 @@ export default function AdminDashboard({
             <Users size={18} /> 受講生一覧
           </button>
         </div>
-        <button className="signout-btn" onClick={onSignOut}>
-          ログアウト
+        <button className="logout-btn" onClick={onSignOut}>
+          <LogOut size={16} /> ログアウト
         </button>
       </nav>
 

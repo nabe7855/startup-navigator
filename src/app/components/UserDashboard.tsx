@@ -1,7 +1,7 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
-import { Calendar, CheckCircle, Layout, Rocket } from "lucide-react";
+import { Calendar, CheckCircle, Layout, LogOut, Rocket } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -249,10 +249,9 @@ export default function UserDashboard({
           </button>
         </div>
         <div className="profile-trigger">
-          <button className="icon-btn text-muted" onClick={onSignOut}>
-            ログアウト
+          <button className="logout-btn" onClick={onSignOut}>
+            <LogOut size={16} /> ログアウト
           </button>
-          <div className="avatar-small" style={{ marginLeft: 8 }}></div>
         </div>
       </nav>
 

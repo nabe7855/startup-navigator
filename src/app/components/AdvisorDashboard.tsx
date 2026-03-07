@@ -1,7 +1,7 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
-import { BookOpen, Calendar, Save, User } from "lucide-react";
+import { BookOpen, Calendar, LogOut, Save, User } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -1209,8 +1209,8 @@ export default function AdvisorDashboard({
             <User size={18} /> プロフィール
           </button>
         </div>
-        <button className="signout-btn" onClick={onSignOut}>
-          ログアウト
+        <button className="logout-btn" onClick={onSignOut}>
+          <LogOut size={16} /> ログアウト
         </button>
       </nav>
 
