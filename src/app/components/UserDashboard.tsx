@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { Calendar, CheckCircle, Layout, LogOut, Rocket } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import UserPlanViewerModal from "./UserPlanViewerModal";
 
 export default function UserDashboard({
   user,
@@ -117,6 +118,9 @@ export default function UserDashboard({
   const [userBookings, setUserBookings] = useState<any[]>([]);
   const [userPlans, setUserPlans] = useState<any[]>([]);
   const [recentComments, setRecentComments] = useState<any[]>([]);
+  const [viewFullPlan, setViewFullPlan] = useState(false);
+  const [selectedProfileAdvisor, setSelectedProfileAdvisor] =
+    useState<any>(null);
 
   useEffect(() => {
     if (view === "booking") {
@@ -178,8 +182,10 @@ export default function UserDashboard({
         .eq("role", "advisor");
       setAdvisors(p || []);
 
-      // 3. Load Advisor Schedules
-      const { data: s } = await supabase.from("advisor_schedules").select("*");
+      // 3. Load Advisor Schedules (Daily Specific Dates)
+      const { data: s } = await supabase
+        .from("advisor_daily_schedules")
+        .select("*");
       setAdvisorSchedules(s || []);
 
       // 4. Load Existing Bookings
@@ -362,12 +368,20 @@ export default function UserDashboard({
             >
               <div className="section-header">
                 <h2 className="section-title">📖 事業計画書サマリー</h2>
-                <button
-                  className="primary-btn outline-btn no-print"
-                  onClick={() => window.print()}
-                >
-                  PDFエクスポート
-                </button>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    className="primary-btn outline-btn no-print"
+                    onClick={() => setViewFullPlan(true)}
+                  >
+                    全体像を見る
+                  </button>
+                  <button
+                    className="primary-btn outline-btn no-print"
+                    onClick={() => window.print()}
+                  >
+                    PDFエクスポート
+                  </button>
+                </div>
               </div>
 
               <div className="summary-grid">
@@ -603,7 +617,7 @@ export default function UserDashboard({
                       const hasShift = advisorSchedules.some(
                         (s) =>
                           activeAdvisorIds.includes(s.advisor_id) &&
-                          s.day_of_week === dayOfWeek,
+                          s.date === h.date,
                       );
 
                       return (
@@ -658,79 +672,111 @@ export default function UserDashboard({
                   </div>
                 ) : (
                   <div className="advisors-slots-area">
-                    {advisors.length === 0 && (
-                      <p className="empty-hint">担当者が登録されていません。</p>
-                    )}
-                    {advisors.map((advisor) => {
-                      const dayOfWeek = new Date(selectedDateStr).getDay();
-                      const schedule = advisorSchedules.find(
-                        (s) =>
-                          s.advisor_id === advisor.id &&
-                          s.day_of_week === dayOfWeek,
+                    {(() => {
+                      if (advisors.length === 0) {
+                        return (
+                          <p className="empty-hint">
+                            担当者が登録されていません。
+                          </p>
+                        );
+                      }
+
+                      // Group slots by hour
+                      const slotsByTime: Record<string, any[]> = {};
+
+                      advisorSchedules
+                        .filter((s) => s.date === selectedDateStr)
+                        .forEach((schedule) => {
+                          const startHour = parseInt(
+                            schedule.start_time.split(":")[0],
+                          );
+                          const endHour = parseInt(
+                            schedule.end_time.split(":")[0],
+                          );
+                          const advisor = advisors.find(
+                            (a) => a.id === schedule.advisor_id,
+                          );
+                          if (!advisor) return;
+
+                          for (let i = startHour; i < endHour; i++) {
+                            const timeStr = `${i}:00`;
+                            if (!slotsByTime[timeStr])
+                              slotsByTime[timeStr] = [];
+                            slotsByTime[timeStr].push(advisor);
+                          }
+                        });
+
+                      const timeEntries = Object.entries(slotsByTime).sort(
+                        (a, b) => parseInt(a[0]) - parseInt(b[0]),
                       );
 
-                      if (!schedule) return null;
-
-                      const startHour = parseInt(
-                        schedule.start_time.split(":")[0],
-                      );
-                      const endHour = parseInt(schedule.end_time.split(":")[0]);
-                      const slots = [];
-                      for (let i = startHour; i < endHour; i++) {
-                        slots.push(`${i}:00`);
+                      if (timeEntries.length === 0) {
+                        return (
+                          <p className="empty-hint">
+                            この日に対応可能な担当者はいません。
+                          </p>
+                        );
                       }
 
                       return (
-                        <div key={advisor.id} className="advisor-booking-card">
-                          <div className="advisor-header">
-                            <div className="advisor-avatar-circle">
-                              {advisor.display_name?.[0] || "?"}
-                            </div>
-                            <div className="advisor-meta">
-                              <span className="advisor-name-label">
-                                {advisor.display_name}
-                              </span>
-                              <span className="advisor-role-label">
-                                アドバイザー
-                              </span>
-                            </div>
-                          </div>
-                          <div className="slots-grid">
-                            {slots.map((s) => {
-                              const isBooked = existingBookings.some(
-                                (b) =>
-                                  b.advisor_id === advisor.id &&
-                                  b.booking_date === selectedDateStr &&
-                                  b.start_time.startsWith(s) &&
-                                  b.status === "confirmed",
-                              );
-                              const isSelected =
-                                selectedSlot === s &&
-                                selectedAdvisorId === advisor.id;
+                        <div className="time-slots-container">
+                          {timeEntries.map(([time, availableAdvisors]) => (
+                            <div key={time} className="time-slot-group">
+                              <div className="time-label">{time}</div>
+                              <div className="time-advisors-grid">
+                                {availableAdvisors.map((advisor) => {
+                                  const isBooked = existingBookings.some(
+                                    (b) =>
+                                      b.advisor_id === advisor.id &&
+                                      b.booking_date === selectedDateStr &&
+                                      b.start_time.startsWith(time) &&
+                                      b.status === "confirmed",
+                                  );
+                                  const isSelected =
+                                    selectedSlot === time &&
+                                    selectedAdvisorId === advisor.id;
 
-                              return (
-                                <button
-                                  key={s}
-                                  className={`slot-chip ${isBooked ? "booked" : isSelected ? "active" : ""}`}
-                                  disabled={isBooked}
-                                  onClick={() => {
-                                    setSelectedSlot(s);
-                                    setSelectedAdvisorId(advisor.id);
-                                  }}
-                                >
-                                  {s}
-                                  {isBooked ? (
-                                    <span className="slot-status">満枠</span>
-                                  ) : (
-                                    <span className="slot-status">空き</span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
+                                  return (
+                                    <div
+                                      key={`${time}-${advisor.id}`}
+                                      className={`time-advisor-card ${isSelected ? "selected" : ""} ${isBooked ? "booked" : ""}`}
+                                    >
+                                      <div
+                                        className="advisor-info-area"
+                                        onClick={() =>
+                                          setSelectedProfileAdvisor(advisor)
+                                        }
+                                      >
+                                        <div className="advisor-avatar-small">
+                                          {advisor.display_name?.[0] || "?"}
+                                        </div>
+                                        <div className="advisor-name-small">
+                                          {advisor.display_name}
+                                        </div>
+                                      </div>
+                                      <button
+                                        className="slot-select-btn"
+                                        disabled={isBooked}
+                                        onClick={() => {
+                                          setSelectedSlot(time);
+                                          setSelectedAdvisorId(advisor.id);
+                                        }}
+                                      >
+                                        {isBooked
+                                          ? "満枠"
+                                          : isSelected
+                                            ? "選択中"
+                                            : "選択"}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       );
-                    })}
+                    })()}
                   </div>
                 )}
               </div>
@@ -1540,7 +1586,41 @@ export default function UserDashboard({
       </div>
 
       {children}
-
+      <UserPlanViewerModal
+        isOpen={viewFullPlan}
+        onClose={() => setViewFullPlan(false)}
+        planData={planData}
+        userBookings={userBookings}
+        recentComments={recentComments}
+      />
+      {selectedProfileAdvisor && (
+        <div
+          className="booking-modal-overlay"
+          onClick={() => setSelectedProfileAdvisor(null)}
+        >
+          <div
+            className="booking-modal profile-modal glass-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>プロフィール</h3>
+              <button
+                className="close-btn"
+                onClick={() => setSelectedProfileAdvisor(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="profile-modal-content">
+              <div className="p-modal-avatar">
+                {selectedProfileAdvisor.display_name?.[0] || "?"}
+              </div>
+              <h2>{selectedProfileAdvisor.display_name}</h2>
+              <p className="p-modal-email">{selectedProfileAdvisor.email}</p>
+            </div>
+          </div>
+        </div>
+      )}
       <style jsx>{`
         /* Base Dashboard Styles */
         .dashboard-root {
@@ -1916,81 +1996,179 @@ export default function UserDashboard({
           gap: 12px;
           text-align: center;
         }
-        .advisors-slots-area {
+        .time-slots-container {
           display: flex;
           flex-direction: column;
-          gap: 24px;
+          gap: 20px;
         }
-        .advisor-booking-card {
-          background: var(--bg-soft);
-          padding: 20px;
-          border-radius: 16px;
+        .time-slot-group {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          border-bottom: 1px solid var(--border-light);
+          padding-bottom: 20px;
         }
-        .advisor-header {
+        .time-slot-group:last-child {
+          border-bottom: none;
+          padding-bottom: 0;
+        }
+        .time-label {
+          font-size: 1.1rem;
+          font-weight: 800;
+          color: var(--secondary);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .time-label::before {
+          content: "";
+          display: block;
+          width: 4px;
+          height: 16px;
+          background: var(--primary);
+          border-radius: 4px;
+        }
+        .time-advisors-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+          gap: 12px;
+        }
+        .time-advisor-card {
+          display: flex;
+          flex-direction: column;
+          background: white;
+          border: 1px solid var(--border-light);
+          border-radius: 12px;
+          padding: 12px;
+          gap: 12px;
+          transition: all 0.2s;
+        }
+        .time-advisor-card.selected {
+          border-color: var(--primary);
+          box-shadow: 0 4px 12px var(--primary-glow);
+          background: var(--primary-soft);
+        }
+        .time-advisor-card.booked {
+          background: #f8fafc;
+          opacity: 0.7;
+        }
+        .advisor-info-area {
           display: flex;
           align-items: center;
           gap: 12px;
-          margin-bottom: 20px;
+          cursor: pointer;
+          padding: 8px;
+          border-radius: 8px;
+          transition: background 0.2s;
         }
-        .advisor-avatar-circle {
-          width: 44px;
-          height: 44px;
-          background: white;
+        .advisor-info-area:hover {
+          background: #f1f5f9;
+        }
+        .advisor-avatar-small {
+          width: 32px;
+          height: 32px;
+          background: var(--primary-soft);
           color: var(--primary);
           border-radius: 50%;
           display: flex;
           align-items: center;
           justify-content: center;
           font-weight: 800;
-          font-size: 1.2rem;
-          border: 2px solid white;
-          box-shadow: var(--shadow-sm);
+          font-size: 0.9rem;
+          flex-shrink: 0;
         }
-        .advisor-meta {
-          display: flex;
-          flex-direction: column;
-        }
-        .advisor-name-label {
+        .advisor-name-small {
           font-weight: 700;
-          font-size: 1rem;
+          font-size: 0.9rem;
           color: var(--secondary);
+          text-decoration: underline;
+          text-decoration-color: transparent;
+          transition: text-decoration-color 0.2s;
         }
-        .advisor-role-label {
-          font-size: 0.75rem;
-          color: var(--text-dim);
+        .advisor-info-area:hover .advisor-name-small {
+          text-decoration-color: var(--primary);
         }
-        .slots-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
-          gap: 8px;
+        .slot-select-btn {
+          width: 100%;
+          padding: 8px;
+          border-radius: 8px;
+          font-size: 0.85rem;
+          font-weight: 700;
+          cursor: pointer;
+          border: 1px solid var(--primary);
+          background: white;
+          color: var(--primary);
+          transition: all 0.2s;
         }
-        .slot-chip {
+        .slot-select-btn:hover:not(:disabled) {
+          background: var(--primary);
+          color: white;
+        }
+        .time-advisor-card.selected .slot-select-btn {
+          background: var(--primary);
+          color: white;
+        }
+        .slot-select-btn:disabled {
+          border-color: #cbd5e1;
+          color: #94a3b8;
+          background: #f1f5f9;
+          cursor: not-allowed;
+        }
+
+        .profile-modal {
+          width: 90%;
+          max-width: 400px;
           display: flex;
           flex-direction: column;
           align-items: center;
-          padding: 10px 4px;
-          background: white;
-          border: 1px solid transparent;
-          border-radius: 12px;
-          cursor: pointer;
-          transition: var(--transition-smooth);
+          text-align: center;
+          padding: 0;
+          overflow: hidden;
         }
-        .slot-chip:hover:not(:disabled) {
-          border-color: var(--primary);
-          transform: scale(1.05);
-          box-shadow: var(--shadow-sm);
+        .profile-modal .modal-header {
+          width: 100%;
+          padding: 24px 24px 0 24px;
+          margin-bottom: 0;
+          justify-content: flex-end;
+          align-items: flex-start;
+          display: flex;
         }
-        .slot-chip.active {
-          background: var(--primary);
-          color: white;
-          transform: scale(1.05);
-          box-shadow: 0 4px 12px var(--primary-glow);
+        .profile-modal .modal-header h3 {
+          margin: 0;
+          font-size: 1.2rem;
+          color: var(--secondary);
+          margin-right: auto;
         }
-        .slot-chip.booked {
-          background: #f1f5f9;
+        .profile-modal-content {
+          padding: 0 32px 40px 32px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          width: 100%;
+        }
+        .p-modal-avatar {
+          width: 80px;
+          height: 80px;
+          background: var(--primary-soft);
+          color: var(--primary);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 800;
+          font-size: 2rem;
+          margin-bottom: 16px;
+        }
+        .profile-modal-content h2 {
+          margin: 0;
+          font-size: 1.5rem;
+          color: var(--secondary);
+          margin-bottom: 8px;
+        }
+        .p-modal-email {
           color: var(--text-muted);
-          opacity: 0.6;
-          cursor: not-allowed;
+          font-size: 0.95rem;
+          margin: 0;
         }
         .time-range-hint.status-off {
           color: var(--text-muted);

@@ -1,9 +1,17 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
-import { BookOpen, Calendar, LogOut, Save, User } from "lucide-react";
+import {
+  BookOpen,
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  LogOut,
+  Save,
+  User,
+} from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type AdvisorTab = "profile" | "schedule" | "bookings";
 
@@ -49,17 +57,20 @@ export default function AdvisorDashboard({
     bio: "",
     avatar_url: "",
   });
-  const [schedules, setSchedules] = useState<
-    Record<number, { start: string; end: string; enabled: boolean }>
-  >({
-    0: { start: "10:00", end: "17:00", enabled: false },
-    1: { start: "10:00", end: "17:00", enabled: true },
-    2: { start: "10:00", end: "17:00", enabled: true },
-    3: { start: "10:00", end: "17:00", enabled: true },
-    4: { start: "10:00", end: "17:00", enabled: true },
-    5: { start: "10:00", end: "17:00", enabled: true },
-    6: { start: "10:00", end: "17:00", enabled: false },
+
+  // Specific-date schedules
+  const [dailySchedules, setDailySchedules] = useState<any[]>([]);
+
+  const [viewMonth, setViewMonth] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const timeBarRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState<number | null>(null);
+  const [newHour, setNewHour] = useState({
+    start_time: "10:00",
+    end_time: "18:00",
   });
+
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [planData, setPlanData] = useState<Record<string, unknown> | null>(
@@ -90,27 +101,16 @@ export default function AdvisorDashboard({
   };
 
   const loadSchedules = async () => {
-    const { data } = await supabase
-      .from("advisor_schedules")
+    // 運営側の営業日程設定画面と連携するため、新しく advisor_daily_schedules テーブルを使用します
+    // テーブルが存在しない場合エラーにならないように maybeSingle または空配列として処理
+    const { data, error } = await supabase
+      .from("advisor_daily_schedules")
       .select("*")
       .eq("advisor_id", userId);
 
-    // 初期化（すべて無効化）
-    const resetMap: typeof schedules = {};
-    for (let i = 0; i <= 6; i++) {
-      resetMap[i] = { start: "10:00", end: "17:00", enabled: false };
+    if (!error && data) {
+      setDailySchedules(data);
     }
-
-    if (data && data.length > 0) {
-      data.forEach((s) => {
-        resetMap[s.day_of_week] = {
-          start: s.start_time.substring(0, 5),
-          end: s.end_time.substring(0, 5),
-          enabled: true,
-        };
-      });
-    }
-    setSchedules(resetMap);
   };
 
   const loadBookings = async () => {
@@ -139,6 +139,46 @@ export default function AdvisorDashboard({
     })();
   }, [userId]);
 
+  const saveDailySchedule = async () => {
+    if (!selectedDate) return;
+    setSaving(true);
+    const { error } = await supabase.from("advisor_daily_schedules").upsert(
+      {
+        advisor_id: userId,
+        date: selectedDate,
+        start_time: newHour.start_time + ":00",
+        end_time: newHour.end_time + ":00",
+      },
+      { onConflict: "advisor_id, date" },
+    );
+    if (error)
+      alert(
+        "保存に失敗しました。データベースにテーブルが存在するか確認してください。：" +
+          error.message,
+      );
+    else {
+      alert("設定を保存しました。");
+      await loadSchedules();
+    }
+    setSaving(false);
+  };
+
+  const removeDailySchedule = async () => {
+    if (!selectedDate) return;
+    setSaving(true);
+    const { error } = await supabase
+      .from("advisor_daily_schedules")
+      .delete()
+      .eq("advisor_id", userId)
+      .eq("date", selectedDate);
+    if (!error) {
+      alert("設定を削除しました。");
+      await loadSchedules();
+      setSelectedDate(null);
+    }
+    setSaving(false);
+  };
+
   const saveProfile = async () => {
     setSaving(true);
     const { error } = await supabase
@@ -147,27 +187,6 @@ export default function AdvisorDashboard({
       .eq("id", userId);
     if (error) alert(error.message);
     else alert("プロフィールを保存しました。");
-    setSaving(false);
-  };
-
-  const saveSchedules = async () => {
-    setSaving(true);
-    await supabase.from("advisor_schedules").delete().eq("advisor_id", userId);
-    const rows = Object.entries(schedules)
-      .filter(([, v]) => v.enabled)
-      .map(([day, v]) => ({
-        advisor_id: userId,
-        day_of_week: Number(day),
-        start_time: v.start,
-        end_time: v.end,
-      }));
-    if (rows.length > 0) {
-      const { error } = await supabase.from("advisor_schedules").insert(rows);
-      if (error) alert(error.message);
-      else alert("シフトを保存しました。");
-    } else {
-      alert("シフトを保存しました（すべての曜日が無効）。");
-    }
     setSaving(false);
   };
 
@@ -1223,12 +1242,7 @@ export default function AdvisorDashboard({
             </p>
             <div className="shifts-container">
               {operatingHours
-                .filter((oh) => {
-                  const [y, m, d] = oh.date.split("-").map(Number);
-                  const dObj = new Date(y, m - 1, d);
-                  const dayOfWeek = dObj.getDay();
-                  return schedules[dayOfWeek]?.enabled;
-                })
+                .filter((oh) => dailySchedules.some((s) => s.date === oh.date))
                 .map((oh) => {
                   const dayBookings = bookings.filter(
                     (b) => b.booking_date === oh.date,
@@ -1236,7 +1250,11 @@ export default function AdvisorDashboard({
                   const [y, m, d] = oh.date.split("-").map(Number);
                   const dObj = new Date(y, m - 1, d);
                   const dayOfWeek = dObj.getDay();
-                  const shiftTime = schedules[dayOfWeek];
+                  const shiftTime = dailySchedules.find(
+                    (s) => s.date === oh.date,
+                  );
+
+                  if (!shiftTime) return null;
 
                   return (
                     <div key={oh.date} className="shift-day-card glass-card">
@@ -1245,7 +1263,8 @@ export default function AdvisorDashboard({
                           {oh.date} ({DAYS[dayOfWeek]})
                         </span>
                         <span className="shift-day-time">
-                          シフト: {shiftTime.start} 〜 {shiftTime.end}
+                          シフト: {shiftTime.start_time.substring(0, 5)} 〜{" "}
+                          {shiftTime.end_time.substring(0, 5)}
                         </span>
                       </div>
 
@@ -1281,11 +1300,9 @@ export default function AdvisorDashboard({
                     </div>
                   );
                 })}
-              {operatingHours.filter((oh) => {
-                const d = new Date(oh.date);
-                const dayOfWeek = d.getDay();
-                return schedules[dayOfWeek]?.enabled;
-              }).length === 0 && (
+              {operatingHours.filter((oh) =>
+                dailySchedules.some((s) => s.date === oh.date),
+              ).length === 0 && (
                 <div className="empty-state glass-card p-12 text-center">
                   <p>有効なシフト設定日がありません。</p>
                   <p className="text-sm text-gray-500 mt-2">
@@ -1298,63 +1315,286 @@ export default function AdvisorDashboard({
         )}
 
         {tab === "schedule" && (
-          <div className="glass-card p-8">
-            <h1 className="advisor-title">シフト設定</h1>
-            <div className="shift-list">
-              {DAYS.map((day, i) => (
-                <div key={i} className="flex-row">
-                  <label className="toggle-label">
-                    <input
-                      type="checkbox"
-                      checked={schedules[i]?.enabled}
-                      onChange={(e) =>
-                        setSchedules({
-                          ...schedules,
-                          [i]: { ...schedules[i], enabled: e.target.checked },
-                        })
+          <div className="hours-view">
+            <h1 className="advisor-title">シフト設定（カレンダー方式）</h1>
+            <p className="advisor-subtitle">
+              運営によって予約可能に設定された日付から、ご自身の稼働時間を設定してください。
+            </p>
+
+            <div className="hours-grid-layout">
+              {/* Calendar Section */}
+              <div className="calendar-panel glass-card">
+                <div className="calendar-header">
+                  <button
+                    className="icon-btn"
+                    onClick={() =>
+                      setViewMonth(
+                        new Date(
+                          viewMonth.getFullYear(),
+                          viewMonth.getMonth() - 1,
+                          1,
+                        ),
+                      )
+                    }
+                  >
+                    <ChevronLeft size={20} />
+                  </button>
+                  <span className="current-month">
+                    {viewMonth.getFullYear()}年 {viewMonth.getMonth() + 1}月
+                  </span>
+                  <button
+                    className="icon-btn"
+                    onClick={() =>
+                      setViewMonth(
+                        new Date(
+                          viewMonth.getFullYear(),
+                          viewMonth.getMonth() + 1,
+                          1,
+                        ),
+                      )
+                    }
+                  >
+                    <ChevronRight size={20} />
+                  </button>
+                </div>
+
+                <div className="calendar-body">
+                  <div className="weekday-header">
+                    {DAYS.map((d) => (
+                      <div key={d} className="weekday">
+                        {d}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="days-grid">
+                    {Array.from({ length: 42 }).map((_, i) => {
+                      const firstDay = new Date(
+                        viewMonth.getFullYear(),
+                        viewMonth.getMonth(),
+                        1,
+                      ).getDay();
+                      const dNumber = i - firstDay + 1;
+                      const dateObj = new Date(
+                        viewMonth.getFullYear(),
+                        viewMonth.getMonth(),
+                        dNumber,
+                      );
+                      const isCurrentMonth =
+                        dateObj.getMonth() === viewMonth.getMonth();
+
+                      const dateStr = [
+                        dateObj.getFullYear(),
+                        (dateObj.getMonth() + 1).toString().padStart(2, "0"),
+                        dateObj.getDate().toString().padStart(2, "0"),
+                      ].join("-");
+
+                      const isSelected = selectedDate === dateStr;
+
+                      const isOpenByAdmin = operatingHours.find(
+                        (h) => h.date === dateStr,
+                      );
+                      const myShift = dailySchedules.find(
+                        (s) => s.date === dateStr,
+                      );
+
+                      if (!isCurrentMonth)
+                        return <div key={i} className="day-cell muted" />;
+
+                      if (!isOpenByAdmin) {
+                        return (
+                          <div
+                            key={i}
+                            className="day-cell muted admin-closed"
+                            title="運営休業日"
+                          >
+                            <span className="day-num">{dNumber}</span>
+                          </div>
+                        );
                       }
-                    />
-                    {day}曜日
-                  </label>
-                  {schedules[i]?.enabled && (
-                    <div className="time-select fade-in">
-                      <div className="time-input-wrap">
-                        <input
-                          type="time"
-                          value={schedules[i].start}
-                          onChange={(e) =>
-                            setSchedules({
-                              ...schedules,
-                              [i]: { ...schedules[i], start: e.target.value },
-                            })
+
+                      return (
+                        <div
+                          key={i}
+                          className={`day-cell ${isSelected ? "selected" : ""} ${myShift ? "has-config" : ""}`}
+                          onClick={() => {
+                            setSelectedDate(dateStr);
+                            if (myShift) {
+                              setNewHour({
+                                start_time: myShift.start_time.substring(0, 5),
+                                end_time: myShift.end_time.substring(0, 5),
+                              });
+                            } else {
+                              // Default to admin's operation hours
+                              setNewHour({
+                                start_time: isOpenByAdmin.start_time.substring(
+                                  0,
+                                  5,
+                                ),
+                                end_time: isOpenByAdmin.end_time.substring(
+                                  0,
+                                  5,
+                                ),
+                              });
+                            }
+                          }}
+                        >
+                          <span className="day-num">{dNumber}</span>
+                          {myShift && (
+                            <div className="config-hint">
+                              {myShift.start_time.substring(0, 5)}〜
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Setting Panel Section */}
+              <div className="settings-panel glass-card">
+                {selectedDate ? (
+                  <div className="setting-content animate-in">
+                    <h3>{selectedDate} のシフト設定</h3>
+                    <p className="setting-hint">
+                      バーをドラッグしてあなたの稼働時間を設定してください
+                      <br />
+                      <span
+                        style={{ fontSize: "0.8rem", color: "var(--accent)" }}
+                      >
+                        ※運営営業日：
+                        {operatingHours
+                          .find((h) => h.date === selectedDate)
+                          ?.start_time.substring(0, 5)}{" "}
+                        〜{" "}
+                        {operatingHours
+                          .find((h) => h.date === selectedDate)
+                          ?.end_time.substring(0, 5)}
+                      </span>
+                    </p>
+
+                    <div className="time-range-picker">
+                      <div className="time-labels">
+                        {Array.from({ length: 7 }).map((_, i) => (
+                          <span key={i}>{i * 4}:00</span>
+                        ))}
+                      </div>
+
+                      <div
+                        className="time-bar-container"
+                        ref={timeBarRef}
+                        onMouseDown={(e) => {
+                          const rect =
+                            timeBarRef.current!.getBoundingClientRect();
+                          const x = e.clientX - rect.left;
+                          const percent = Math.max(
+                            0,
+                            Math.min(100, (x / rect.width) * 100),
+                          );
+                          const hour = Math.round((percent / 100) * 24);
+                          setDragStart(hour);
+                          setIsDragging(true);
+                          const hStr = hour.toString().padStart(2, "0") + ":00";
+                          setNewHour((prev) => ({
+                            ...prev,
+                            start_time: hStr,
+                            end_time: hStr,
+                          }));
+                        }}
+                        onMouseMove={(e) => {
+                          if (!isDragging || dragStart === null) return;
+                          const rect =
+                            timeBarRef.current!.getBoundingClientRect();
+                          const x = e.clientX - rect.left;
+                          const percent = Math.max(
+                            0,
+                            Math.min(100, (x / rect.width) * 100),
+                          );
+                          const hour = Math.round((percent / 100) * 24);
+
+                          const start = Math.min(dragStart, hour);
+                          const end = Math.max(dragStart, hour);
+
+                          setNewHour((prev) => ({
+                            ...prev,
+                            start_time:
+                              start.toString().padStart(2, "0") + ":00",
+                            end_time: end.toString().padStart(2, "0") + ":00",
+                          }));
+                        }}
+                        onMouseUp={() => {
+                          setIsDragging(false);
+                          setDragStart(null);
+                        }}
+                        onMouseLeave={() => {
+                          if (isDragging) {
+                            setIsDragging(false);
+                            setDragStart(null);
                           }
+                        }}
+                      >
+                        {Array.from({ length: 25 }).map((_, i) => (
+                          <div
+                            key={i}
+                            className="time-tick"
+                            style={{ left: `${(i / 24) * 100}%` }}
+                          />
+                        ))}
+                        <div
+                          className="range-highlight"
+                          style={{
+                            left: `${(parseInt(newHour.start_time) / 24) * 100}%`,
+                            width: `${((parseInt(newHour.end_time) - parseInt(newHour.start_time)) / 24) * 100}%`,
+                          }}
                         />
                       </div>
-                      <span className="time-separator">〜</span>
-                      <div className="time-input-wrap">
-                        <input
-                          type="time"
-                          value={schedules[i].end}
-                          onChange={(e) =>
-                            setSchedules({
-                              ...schedules,
-                              [i]: { ...schedules[i], end: e.target.value },
-                            })
-                          }
-                        />
+
+                      <div className="time-value-display">
+                        <div className="t-box">
+                          <span>開始</span>
+                          <strong>{newHour.start_time}</strong>
+                        </div>
+                        <div className="t-separator">〜</div>
+                        <div className="t-box">
+                          <span>終了</span>
+                          <strong>{newHour.end_time}</strong>
+                        </div>
                       </div>
                     </div>
-                  )}
-                </div>
-              ))}
+
+                    <div
+                      className="actions"
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                      }}
+                    >
+                      <button
+                        className="primary-btn w-full"
+                        onClick={saveDailySchedule}
+                        disabled={saving}
+                      >
+                        <Save size={16} /> 設定を保存する
+                      </button>
+                      {dailySchedules.find((s) => s.date === selectedDate) && (
+                        <button
+                          className="text-btn danger w-full mt-4"
+                          onClick={() => removeDailySchedule()}
+                        >
+                          この日のシフトを削除
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-selection">
+                    <Calendar size={48} />
+                    <p>カレンダーから稼働する日付を選択してください</p>
+                  </div>
+                )}
+              </div>
             </div>
-            <button
-              className="primary-btn mt-6"
-              onClick={saveSchedules}
-              disabled={saving}
-            >
-              保存する
-            </button>
           </div>
         )}
 
