@@ -1627,6 +1627,45 @@ export default function UserDashboard({
         </div>
       )}
       <style jsx>{`
+        .booking-modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(15, 23, 42, 0.4);
+          backdrop-filter: blur(10px);
+          display: flex;
+          align-items: flex-start;
+          justify-content: center;
+          z-index: 9999;
+          padding: 60px 20px;
+          animation: fadeIn 0.3s ease-out;
+          cursor: pointer;
+        }
+
+        .booking-modal {
+          background: white;
+          border-radius: 24px;
+          box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+          width: 100%;
+          max-width: 480px;
+          animation: modalSlideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+          overflow: hidden;
+          cursor: default;
+        }
+
+        @keyframes modalSlideDown {
+          from {
+            opacity: 0;
+            transform: translateY(-40px) scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+
         /* Base Dashboard Styles */
         .dashboard-root {
           display: flex;
@@ -2121,22 +2160,38 @@ export default function UserDashboard({
         }
 
         .profile-modal {
-          width: 90%;
-          max-width: 400px;
+          width: 100%;
           display: flex;
           flex-direction: column;
           align-items: center;
           text-align: center;
           padding: 0;
-          overflow: hidden;
         }
         .profile-modal .modal-header {
           width: 100%;
           padding: 24px 24px 0 24px;
           margin-bottom: 0;
           justify-content: flex-end;
-          align-items: flex-start;
+          align-items: center;
           display: flex;
+        }
+        .close-btn {
+          background: #f1f5f9;
+          border: none;
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.2rem;
+          cursor: pointer;
+          color: #64748b;
+          transition: all 0.2s;
+        }
+        .close-btn:hover {
+          background: #e2e8f0;
+          color: #0f172a;
         }
         .profile-modal .modal-header h3 {
           margin: 0;
