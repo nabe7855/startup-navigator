@@ -9,9 +9,8 @@ import {
   CheckCircle,
   Layout,
   Rocket,
-  UserPlus,
 } from "lucide-react";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 export default function StartupNavigator() {
   const [view, setView] = useState<"dashboard" | "booking" | "wizard">(
@@ -29,6 +28,7 @@ export default function StartupNavigator() {
     role: string;
   } | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
+  const lastFetchedId = useRef<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -36,7 +36,6 @@ export default function StartupNavigator() {
     // Consolidate auth logic
     const initializeAuth = async () => {
       try {
-        // Initial session check
         const {
           data: { session },
         } = await supabase.auth.getSession();
@@ -44,12 +43,9 @@ export default function StartupNavigator() {
         if (session && mounted) {
           await fetchUserProfile(session.user.id, session.user.email!);
         }
-
-        if (mounted) {
-          setAuthChecking(false);
-        }
       } catch (err) {
-        console.error("Auth init error:", err);
+        console.warn("Auth init error:", err);
+      } finally {
         if (mounted) {
           setAuthChecking(false);
         }
@@ -58,13 +54,16 @@ export default function StartupNavigator() {
 
     initializeAuth();
 
-    // Safety timeout: stop loading after 8 seconds no matter what
+    // Safety timeout: stop loading after 10 seconds no matter what
     const timeout = setTimeout(() => {
-      if (mounted && authChecking) {
-        console.warn("Auth check timed out, forcing load stop");
-        setAuthChecking(false);
+      if (mounted) {
+        // Use functional update or just set false. Functional is safer against stale check.
+        setAuthChecking((prev) => {
+          if (prev) console.warn("Auth check safety timeout fired");
+          return false;
+        });
       }
-    }, 8000);
+    }, 10000);
 
     // Listen to auth changes
     const {
@@ -75,12 +74,12 @@ export default function StartupNavigator() {
 
       if (session) {
         await fetchUserProfile(session.user.id, session.user.email!);
+        setAuthChecking(false);
       } else {
         setUser(null);
+        lastFetchedId.current = null;
+        setAuthChecking(false);
       }
-
-      // If we got an event, we definitely checked auth
-      setAuthChecking(false);
     });
 
     return () => {
@@ -91,11 +90,17 @@ export default function StartupNavigator() {
   }, []);
 
   const fetchUserProfile = async (userId: string, email: string) => {
+    // Deduplicate: don't fetch if we already have a session for this user OR if fetch is in progress
+    if (lastFetchedId.current === userId) {
+      return;
+    }
+    lastFetchedId.current = userId;
+
     console.log("Fetching profile for:", userId);
 
-    // Create a promise that rejects after 5 seconds
+    // Create a promise that rejects after 8 seconds
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Profile fetch timeout")), 5000),
+      setTimeout(() => reject(new Error("Profile fetch timeout")), 8000),
     );
 
     try {
@@ -103,7 +108,7 @@ export default function StartupNavigator() {
         .from("profiles")
         .select("role")
         .eq("id", userId)
-        .single();
+        .maybeSingle();
 
       const { data, error } = (await Promise.race([
         fetchPromise,
@@ -111,17 +116,21 @@ export default function StartupNavigator() {
       ])) as any;
 
       if (error) {
-        console.warn("Profile fetch error (using fallback):", error);
+        console.warn(
+          `Profile fetch error (${error.code || "unknown"}):`,
+          error.message || error,
+        );
       }
 
-      console.log("Setting user with role:", data?.role || "user");
-      setUser({
-        email,
-        id: userId,
-        role: data?.role || "user",
-      });
-    } catch (e) {
-      console.error("fetchUserProfile failed:", e);
+      const role = data?.role || "user";
+      console.log("Setting user with role:", role);
+      setUser({ email, id: userId, role });
+    } catch (e: any) {
+      if (e.message === "Profile fetch timeout") {
+        console.warn("Profile fetch timed out, falling back to 'user' role");
+      } else {
+        console.warn("fetchUserProfile failed:", e);
+      }
       // Fallback: assume 'user' role so they can at least see the dashboard
       setUser({ email, id: userId, role: "user" });
     }
@@ -217,12 +226,39 @@ export default function StartupNavigator() {
   const [advisors, setAdvisors] = useState<any[]>([]);
   const [advisorSchedules, setAdvisorSchedules] = useState<any[]>([]);
   const [existingBookings, setExistingBookings] = useState<any[]>([]);
+  const [userBookings, setUserBookings] = useState<any[]>([]);
 
   useEffect(() => {
     if (view === "booking") {
       void loadBookingData();
     }
-  }, [view]);
+    if (view === "dashboard" && user?.id) {
+      void loadUserBookings();
+      void loadPlanData();
+    }
+  }, [view, user?.id]);
+
+  const loadPlanData = async () => {
+    if (!user?.id) return;
+    const { data } = await supabase
+      .from("business_plans")
+      .select("*")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (data?.plan_data) {
+      setPlanData(data.plan_data as any);
+    }
+  };
+
+  const loadUserBookings = async () => {
+    if (!user?.id) return;
+    const { data } = await supabase
+      .from("bookings")
+      .select("*, profiles:advisor_id (display_name)")
+      .eq("user_id", user.id)
+      .order("booking_date", { ascending: false });
+    if (data) setUserBookings(data);
+  };
 
   const loadBookingData = async () => {
     setLoading(true);
@@ -303,10 +339,14 @@ export default function StartupNavigator() {
           "登録が完了しました。確認メールを送信した場合はご確認ください（ローカルテスト時はそのままログインされることがあります）。",
         );
       }
-    } catch (error: unknown) {
+    } catch (error: any) {
       console.error(error);
-      const msg =
+      let msg =
         error instanceof Error ? error.message : "エラーが発生しました。";
+      if (msg === "Invalid login credentials" && isLogin) {
+        msg =
+          "ログインに失敗しました。メールアドレスまたはパスワードが間違っています。\n\n※ 招待された担当者の方は、まだアカウントが作成されていません。左の「新規登録」タブから、管理者と同じメールアドレス・パスワードを入力して登録してください。";
+      }
       alert(msg);
     } finally {
       setLoading(false);
@@ -397,6 +437,12 @@ export default function StartupNavigator() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
+              {isLogin && (
+                <p className="field-hint text-xs mt-1">
+                  ※
+                  招待された担当者の方は、初回のみ「新規登録」タブから登録が必要です。
+                </p>
+              )}
             </div>
             <button type="submit" className="primary-btn" disabled={loading}>
               {loading ? "処理中..." : isLogin ? "ログインする" : "開始する"}
@@ -514,6 +560,144 @@ export default function StartupNavigator() {
             width: 100%;
             padding: 14px;
             font-size: 1rem;
+            border-radius: 14px;
+            box-shadow: 0 4px 12px var(--primary-glow);
+          }
+          .primary-btn:active {
+            transform: scale(0.98);
+          }
+          .launch-btn {
+            background: linear-gradient(
+              135deg,
+              var(--primary) 0%,
+              #1d4ed8 100%
+            );
+            border: none;
+            color: white;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+          }
+          .launch-btn:hover {
+            box-shadow: 0 8px 20px var(--primary-glow);
+          }
+          .session-history {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            margin-top: 16px;
+          }
+          .session-row {
+            padding: 16px;
+            background: #f8fafc;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+          }
+          .s-date {
+            font-weight: 800;
+            font-size: 1.1rem;
+            margin-bottom: 4px;
+          }
+          .s-info {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 8px;
+          }
+          .s-advisor {
+            font-size: 0.85rem;
+            color: #64748b;
+            font-weight: 700;
+          }
+          .s-result {
+            padding: 2px 10px;
+            border-radius: 99px;
+            font-size: 0.75rem;
+            font-weight: 800;
+          }
+          .s-result.pass {
+            background: #dcfce7;
+            color: #166534;
+          }
+          .s-result.fail {
+            background: #fee2e2;
+            color: #991b1b;
+          }
+          .s-result.pending {
+            background: #f1f5f9;
+            color: #475569;
+          }
+          .s-comment {
+            font-size: 0.85rem;
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border-left: 4px solid var(--primary);
+          }
+          .s-comment p {
+            margin: 0;
+            line-height: 1.5;
+          }
+
+          .business-plan-summary {
+            padding: 32px;
+            margin-top: 32px;
+          }
+          .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+          }
+          .summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+          }
+          .summary-item h4 {
+            font-size: 0.9rem;
+            font-weight: 800;
+            color: var(--primary);
+            margin-bottom: 8px;
+          }
+          .summary-item p {
+            font-size: 0.9rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            margin: 0;
+          }
+          .summary-footer {
+            margin-top: 32px;
+            font-size: 0.8rem;
+            color: #94a3b8;
+            text-align: center;
+          }
+
+          @media print {
+            .no-print,
+            .side-nav,
+            .content-header,
+            .stats-grid,
+            .tasks-section {
+              display: none !important;
+            }
+            .dashboard-root {
+              background: white !important;
+              padding: 0 !important;
+            }
+            .main-content {
+              margin: 0 !important;
+              padding: 0 !important;
+            }
+            .business-plan-summary {
+              border: none !important;
+              box-shadow: none !important;
+              background: white !important;
+              width: 100% !important;
+            }
+            .glass-card::before {
+              display: none;
+            }
           }
         `}</style>
       </div>
@@ -615,18 +799,98 @@ export default function StartupNavigator() {
               >
                 <div className="stat-header">
                   <div className="stat-icon-bg">
-                    <UserPlus size={18} color="var(--accent)" />
+                    <CheckCircle size={18} color="#10b981" />
                   </div>
-                  <span className="stat-label">完了タスク</span>
+                  <span className="stat-label">合格数</span>
                 </div>
-                <div className="stat-value">1 / 4</div>
-                <p className="stat-hint">キックオフ面談 完了</p>
+                <div className="stat-value">
+                  {
+                    userBookings.filter((b) => b.evaluation_result === "pass")
+                      .length
+                  }
+                </div>
+                <p className="stat-hint">目標達成まであと少しです</p>
               </div>
             </div>
 
             <section
+              className="glass-card animate-in-up"
+              style={{ animationDelay: "0.2s", marginBottom: "32px" }}
+            >
+              <div className="section-header">
+                <h3 className="section-title">セッション履歴・判定</h3>
+              </div>
+              <div className="session-history">
+                {userBookings.length === 0 ? (
+                  <p className="empty-hint">まだセッション履歴はありません。</p>
+                ) : (
+                  userBookings.map((b) => (
+                    <div key={b.id} className="session-row">
+                      <div className="s-date">{b.booking_date}</div>
+                      <div className="s-info">
+                        <span className="s-advisor">
+                          担当: {b.profiles?.display_name || "担当者"}
+                        </span>
+                        <span className={`s-result ${b.evaluation_result}`}>
+                          {b.evaluation_result === "pass"
+                            ? "合格"
+                            : b.evaluation_result === "fail"
+                              ? "不合格"
+                              : "受講中/未公表"}
+                        </span>
+                      </div>
+                      {b.advisor_comment && (
+                        <div className="s-comment">
+                          <p>
+                            <strong>講師コメント:</strong> {b.advisor_comment}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section
+              className="business-plan-summary glass-card animate-in-up print-section"
+              style={{ animationDelay: "0.3s" }}
+            >
+              <div className="section-header">
+                <h2 className="section-title">📖 事業計画書サマリー</h2>
+                <button
+                  className="primary-btn outline-btn no-print"
+                  onClick={() => window.print()}
+                >
+                  PDFエクスポート
+                </button>
+              </div>
+
+              <div className="summary-grid">
+                <div className="summary-item">
+                  <h4>創業の動機</h4>
+                  <p>{planData.motivation || "未入力"}</p>
+                </div>
+                <div className="summary-item">
+                  <h4>事業内容</h4>
+                  <p>{planData.service_main || "未入力"}</p>
+                </div>
+                <div className="summary-item">
+                  <h4>セールスポイント</h4>
+                  <p>{planData.service_strength || "未入力"}</p>
+                </div>
+                <div className="summary-item">
+                  <h4>販売ターゲット・戦略</h4>
+                  <p>{planData.service_strategy || "未入力"}</p>
+                </div>
+              </div>
+              <p className="summary-footer">
+                ※ 全ての内容は計画書作成ウィザードから編集可能です。
+              </p>
+            </section>
+            <section
               className="tasks-section glass-card animate-in-up"
-              style={{ animationDelay: "0.2s" }}
+              style={{ animationDelay: "0.4s" }}
             >
               <div className="section-header">
                 <h3>最近の活動</h3>
@@ -665,34 +929,68 @@ export default function StartupNavigator() {
                     : "アドバイザーの空き状況から日時を選択してください。"}
                 </p>
               </div>
-              <button className="text-btn" onClick={() => setView("dashboard")}>
-                戻る
-              </button>
+              <div className="header-actions">
+                <button
+                  className="primary-btn outline-btn"
+                  onClick={() => setView("dashboard")}
+                >
+                  戻る
+                </button>
+              </div>
             </header>
             <div className="booking-layout">
               {/* 1. Date Selection */}
               <div className="booking-panel glass-card animate-in-up">
-                <h3>1. 日時を選択</h3>
+                <div className="panel-header">
+                  <div className="panel-num">1</div>
+                  <h3>日時を選択</h3>
+                </div>
                 <div className="available-dates-list">
                   {availableHours.length === 0 ? (
                     <p className="empty-hint">現在予約可能な日はありません。</p>
                   ) : (
-                    availableHours.map((h) => (
-                      <button
-                        key={h.id}
-                        className={`date-option-card ${selectedDateStr === h.date ? "active" : ""}`}
-                        onClick={() => {
-                          setSelectedDateStr(h.date);
-                          setSelectedSlot(null);
-                          setSelectedAdvisorId(null);
-                        }}
-                      >
-                        <span className="date-val">{h.date}</span>
-                        <span className="time-range">
-                          {h.start_time} - {h.end_time}
-                        </span>
-                      </button>
-                    ))
+                    availableHours.map((h) => {
+                      const dateObj = new Date(h.date.replace(/-/g, "/"));
+                      const dayOfWeek = dateObj.getDay();
+                      const activeAdvisorIds = advisors.map((a) => a.id);
+                      const hasShift = advisorSchedules.some(
+                        (s) =>
+                          activeAdvisorIds.includes(s.advisor_id) &&
+                          s.day_of_week === dayOfWeek,
+                      );
+
+                      return (
+                        <button
+                          key={h.id}
+                          className={`date-option-card ${selectedDateStr === h.date ? "active" : ""} ${!hasShift ? "disabled-card" : ""}`}
+                          disabled={!hasShift}
+                          onClick={() => {
+                            setSelectedDateStr(h.date);
+                            setSelectedSlot(null);
+                            setSelectedAdvisorId(null);
+                          }}
+                        >
+                          <span className="date-val-month">
+                            {dateObj.getMonth() + 1}月
+                          </span>
+                          <span className="date-val-day">
+                            {dateObj.getDate()}
+                          </span>
+                          <span className="date-val-year">
+                            {h.date.split("-")[0]}
+                          </span>
+                          <div className="date-option-footer">
+                            {hasShift ? (
+                              <span className="time-range-hint">予約可能</span>
+                            ) : (
+                              <span className="time-range-hint status-off">
+                                担当者不在
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -702,18 +1000,21 @@ export default function StartupNavigator() {
                 className="booking-panel glass-card animate-in-up"
                 style={{ animationDelay: "0.1s" }}
               >
-                <h3>2. 担当者と時間を選択</h3>
+                <div className="panel-header">
+                  <div className="panel-num">2</div>
+                  <h3>担当者と時間を選択</h3>
+                </div>
                 {!selectedDateStr ? (
-                  <p className="empty-hint text-center py-20">
-                    先に日付を選択してください。
-                  </p>
+                  <div className="empty-selection-placeholder">
+                    <Calendar size={32} />
+                    <p>先に日付を選択してください</p>
+                  </div>
                 ) : (
                   <div className="advisors-slots-area">
                     {advisors.length === 0 && (
                       <p className="empty-hint">担当者が登録されていません。</p>
                     )}
                     {advisors.map((advisor) => {
-                      // Find advisor's schedule for this day of week
                       const dayOfWeek = new Date(selectedDateStr).getDay();
                       const schedule = advisorSchedules.find(
                         (s) =>
@@ -723,7 +1024,6 @@ export default function StartupNavigator() {
 
                       if (!schedule) return null;
 
-                      // Generate hourly slots
                       const startHour = parseInt(
                         schedule.start_time.split(":")[0],
                       );
@@ -734,16 +1034,21 @@ export default function StartupNavigator() {
                       }
 
                       return (
-                        <div key={advisor.id} className="advisor-slots-row">
-                          <div className="advisor-mini-profile">
-                            <div className="avatar-xs">
+                        <div key={advisor.id} className="advisor-booking-card">
+                          <div className="advisor-header">
+                            <div className="advisor-avatar-circle">
                               {advisor.display_name?.[0] || "?"}
                             </div>
-                            <span className="advisor-name">
-                              {advisor.display_name}
-                            </span>
+                            <div className="advisor-meta">
+                              <span className="advisor-name-label">
+                                {advisor.display_name}
+                              </span>
+                              <span className="advisor-role-label">
+                                アドバイザー
+                              </span>
+                            </div>
                           </div>
-                          <div className="slots-strip">
+                          <div className="slots-grid">
                             {slots.map((s) => {
                               const isBooked = existingBookings.some(
                                 (b) =>
@@ -759,7 +1064,7 @@ export default function StartupNavigator() {
                               return (
                                 <button
                                   key={s}
-                                  className={`mini-slot-btn ${isBooked ? "booked" : isSelected ? "active" : ""}`}
+                                  className={`slot-chip ${isBooked ? "booked" : isSelected ? "active" : ""}`}
                                   disabled={isBooked}
                                   onClick={() => {
                                     setSelectedSlot(s);
@@ -767,8 +1072,10 @@ export default function StartupNavigator() {
                                   }}
                                 >
                                   {s}
-                                  {isBooked && (
-                                    <span className="booked-x">×</span>
+                                  {isBooked ? (
+                                    <span className="slot-status">満枠</span>
+                                  ) : (
+                                    <span className="slot-status">空き</span>
                                   )}
                                 </button>
                               );
@@ -786,22 +1093,25 @@ export default function StartupNavigator() {
                 className="booking-panel glass-card animate-in-up"
                 style={{ animationDelay: "0.2s" }}
               >
-                <h3>3. 予約を確定</h3>
-                <div className="final-summary">
-                  <div className="summary-item">
+                <div className="panel-header">
+                  <div className="panel-num">3</div>
+                  <h3>予約を確定</h3>
+                </div>
+                <div className="final-summary-card">
+                  <div className="summary-row">
                     <label>日付</label>
-                    <span>{selectedDateStr || "未選択"}</span>
+                    <strong>{selectedDateStr || "未選択"}</strong>
                   </div>
-                  <div className="summary-item">
+                  <div className="summary-row">
                     <label>時間</label>
-                    <span>{selectedSlot || "未選択"}</span>
+                    <strong>{selectedSlot || "未選択"}</strong>
                   </div>
-                  <div className="summary-item">
+                  <div className="summary-row">
                     <label>担当</label>
-                    <span>
+                    <strong>
                       {advisors.find((a) => a.id === selectedAdvisorId)
                         ?.display_name || "未選択"}
-                    </span>
+                    </strong>
                   </div>
                 </div>
                 <button
@@ -1200,77 +1510,79 @@ export default function StartupNavigator() {
                     </p>
 
                     <div className="finance-table mt-12">
-                      <div className="table-header-grid-3">
-                        <div className="col-cat">区分</div>
-                        <div className="col-item">内容（例：機械購入）</div>
-                        <div className="col-amt">金額(万円)</div>
+                      <div className="table-inner">
+                        <div className="table-header-grid-3">
+                          <div className="col-cat">区分</div>
+                          <div className="col-item">内容（例：機械購入）</div>
+                          <div className="col-amt">金額(万円)</div>
+                        </div>
+                        {[0, 1].map((i) => (
+                          <div key={`equip-${i}`} className="table-row-grid-3">
+                            <div className="col-cat-val">
+                              {i === 0 ? "設備資金" : ""}
+                            </div>
+                            <input
+                              type="text"
+                              className="input-flush col-item"
+                              value={planData.funds_equip_items[i].item}
+                              onChange={(e) => {
+                                const next = [...planData.funds_equip_items];
+                                next[i].item = e.target.value;
+                                setPlanData({
+                                  ...planData,
+                                  funds_equip_items: next,
+                                });
+                              }}
+                            />
+                            <input
+                              type="number"
+                              className="input-flush col-amt"
+                              value={planData.funds_equip_items[i].amount}
+                              onChange={(e) => {
+                                const next = [...planData.funds_equip_items];
+                                next[i].amount = e.target.value;
+                                setPlanData({
+                                  ...planData,
+                                  funds_equip_items: next,
+                                });
+                              }}
+                            />
+                          </div>
+                        ))}
+                        {[0, 1].map((i) => (
+                          <div key={`work-${i}`} className="table-row-grid-3">
+                            <div className="col-cat-val">
+                              {i === 0 ? "運転資金" : ""}
+                            </div>
+                            <input
+                              type="text"
+                              className="input-flush col-item"
+                              value={planData.funds_work_items[i].item}
+                              onChange={(e) => {
+                                const next = [...planData.funds_work_items];
+                                next[i].item = e.target.value;
+                                setPlanData({
+                                  ...planData,
+                                  funds_work_items: next,
+                                });
+                              }}
+                            />
+                            <input
+                              type="number"
+                              className="input-flush col-amt"
+                              value={planData.funds_work_items[i].amount}
+                              onChange={(e) => {
+                                const next = [...planData.funds_work_items];
+                                next[i].amount = e.target.value;
+                                setPlanData({
+                                  ...planData,
+                                  funds_work_items: next,
+                                });
+                              }}
+                            />
+                          </div>
+                        ))}
                       </div>
-                      {[0, 1].map((i) => (
-                        <div key={`equip-${i}`} className="table-row-grid-3">
-                          <div className="col-cat-val">
-                            {i === 0 ? "設備資金" : ""}
-                          </div>
-                          <input
-                            type="text"
-                            className="input-flush col-item"
-                            value={planData.funds_equip_items[i].item}
-                            onChange={(e) => {
-                              const next = [...planData.funds_equip_items];
-                              next[i].item = e.target.value;
-                              setPlanData({
-                                ...planData,
-                                funds_equip_items: next,
-                              });
-                            }}
-                          />
-                          <input
-                            type="number"
-                            className="input-flush col-amt"
-                            value={planData.funds_equip_items[i].amount}
-                            onChange={(e) => {
-                              const next = [...planData.funds_equip_items];
-                              next[i].amount = e.target.value;
-                              setPlanData({
-                                ...planData,
-                                funds_equip_items: next,
-                              });
-                            }}
-                          />
-                        </div>
-                      ))}
-                      {[0, 1].map((i) => (
-                        <div key={`work-${i}`} className="table-row-grid-3">
-                          <div className="col-cat-val">
-                            {i === 0 ? "運転資金" : ""}
-                          </div>
-                          <input
-                            type="text"
-                            className="input-flush col-item"
-                            value={planData.funds_work_items[i].item}
-                            onChange={(e) => {
-                              const next = [...planData.funds_work_items];
-                              next[i].item = e.target.value;
-                              setPlanData({
-                                ...planData,
-                                funds_work_items: next,
-                              });
-                            }}
-                          />
-                          <input
-                            type="number"
-                            className="input-flush col-amt"
-                            value={planData.funds_work_items[i].amount}
-                            onChange={(e) => {
-                              const next = [...planData.funds_work_items];
-                              next[i].amount = e.target.value;
-                              setPlanData({
-                                ...planData,
-                                funds_work_items: next,
-                              });
-                            }}
-                          />
-                        </div>
-                      ))}
                     </div>
                   </div>
                 )}
@@ -1378,131 +1690,136 @@ export default function StartupNavigator() {
                   <div className="step-body">
                     <label>7. 事業計画について（収支計画）</label>
                     <div className="outlook-table mt-16">
-                      <div className="table-header-grid-outlook">
-                        <div>項目</div>
-                        <div>創業当初</div>
-                        <div>1年後</div>
-                        <div>数字の根拠</div>
-                      </div>
-                      <div className="table-row-grid-outlook header-row">
-                        <span>①売上について（年間/万円）</span>
-                      </div>
-                      <div className="table-row-grid-outlook">
-                        <span className="row-label">売上高</span>
-                        <input
-                          type="number"
-                          className="input-flush"
-                          value={planData.startup_sales}
-                          onChange={(e) =>
-                            setPlanData({
-                              ...planData,
-                              startup_sales: e.target.value,
-                            })
-                          }
-                        />
-                        <input
-                          type="number"
-                          className="input-flush"
-                          value={planData.after1y_sales}
-                          onChange={(e) =>
-                            setPlanData({
-                              ...planData,
-                              after1y_sales: e.target.value,
-                            })
-                          }
-                        />
-                        <input
-                          type="text"
-                          className="input-flush"
-                          value={planData.startup_basis}
-                          onChange={(e) =>
-                            setPlanData({
-                              ...planData,
-                              startup_basis: e.target.value,
-                            })
-                          }
-                        />
-                      </div>
-                      <div className="table-row-grid-outlook">
-                        <span className="row-label">売上原価</span>
-                        <input
-                          type="number"
-                          className="input-flush"
-                          value={planData.startup_cost}
-                          onChange={(e) =>
-                            setPlanData({
-                              ...planData,
-                              startup_cost: e.target.value,
-                            })
-                          }
-                        />
-                        <input
-                          type="number"
-                          className="input-flush"
-                          value={planData.after1y_cost}
-                          onChange={(e) =>
-                            setPlanData({
-                              ...planData,
-                              after1y_cost: e.target.value,
-                            })
-                          }
-                        />
-                        <span>-</span>
-                      </div>
-                      <div className="table-row-grid-outlook header-row">
-                        <span>②経費について</span>
-                      </div>
-                      {[
-                        {
-                          lab: "人件費",
-                          s: "startup_labor",
-                          a: "after1y_labor",
-                        },
-                        { lab: "家賃", s: "startup_rent", a: "after1y_rent" },
-                        {
-                          lab: "支払利息",
-                          s: "startup_interest",
-                          a: "after1y_interest",
-                        },
-                        {
-                          lab: "その他",
-                          s: "startup_others",
-                          a: "after1y_others",
-                        },
-                      ].map((item) => (
-                        <div key={item.lab} className="table-row-grid-outlook">
-                          <span className="row-label">{item.lab}</span>
+                      <div className="table-inner">
+                        <div className="table-header-grid-outlook">
+                          <div>項目</div>
+                          <div>創業当初</div>
+                          <div>1年後</div>
+                          <div>数字の根拠</div>
+                        </div>
+                        <div className="table-row-grid-outlook header-row">
+                          <span>①売上について（年間/万円）</span>
+                        </div>
+                        <div className="table-row-grid-outlook">
+                          <span className="row-label">売上高</span>
                           <input
                             type="number"
                             className="input-flush"
-                            value={String(
-                              (planData as Record<string, unknown>)[item.s] ??
-                                "",
-                            )}
+                            value={planData.startup_sales}
                             onChange={(e) =>
                               setPlanData({
                                 ...planData,
-                                [item.s]: e.target.value,
+                                startup_sales: e.target.value,
                               })
                             }
                           />
                           <input
                             type="number"
                             className="input-flush"
-                            value={String(
-                              (planData as Record<string, unknown>)[item.a] ??
-                                "",
-                            )}
+                            value={planData.after1y_sales}
                             onChange={(e) =>
                               setPlanData({
                                 ...planData,
-                                [item.a]: e.target.value,
+                                after1y_sales: e.target.value,
+                              })
+                            }
+                          />
+                          <input
+                            type="text"
+                            className="input-flush"
+                            value={planData.startup_basis}
+                            onChange={(e) =>
+                              setPlanData({
+                                ...planData,
+                                startup_basis: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="table-row-grid-outlook">
+                          <span className="row-label">売上原価</span>
+                          <input
+                            type="number"
+                            className="input-flush"
+                            value={planData.startup_cost}
+                            onChange={(e) =>
+                              setPlanData({
+                                ...planData,
+                                startup_cost: e.target.value,
+                              })
+                            }
+                          />
+                          <input
+                            type="number"
+                            className="input-flush"
+                            value={planData.after1y_cost}
+                            onChange={(e) =>
+                              setPlanData({
+                                ...planData,
+                                after1y_cost: e.target.value,
                               })
                             }
                           />
                           <span>-</span>
                         </div>
-                      ))}
+                        <div className="table-row-grid-outlook header-row">
+                          <span>②経費について</span>
+                        </div>
+                        {[
+                          {
+                            lab: "人件費",
+                            s: "startup_labor",
+                            a: "after1y_labor",
+                          },
+                          { lab: "家賃", s: "startup_rent", a: "after1y_rent" },
+                          {
+                            lab: "支払利息",
+                            s: "startup_interest",
+                            a: "after1y_interest",
+                          },
+                          {
+                            lab: "その他",
+                            s: "startup_others",
+                            a: "after1y_others",
+                          },
+                        ].map((item) => (
+                          <div
+                            key={item.lab}
+                            className="table-row-grid-outlook"
+                          >
+                            <span className="row-label">{item.lab}</span>
+                            <input
+                              type="number"
+                              className="input-flush"
+                              value={String(
+                                (planData as Record<string, unknown>)[item.s] ??
+                                  "",
+                              )}
+                              onChange={(e) =>
+                                setPlanData({
+                                  ...planData,
+                                  [item.s]: e.target.value,
+                                })
+                              }
+                            />
+                            <input
+                              type="number"
+                              className="input-flush"
+                              value={String(
+                                (planData as Record<string, unknown>)[item.a] ??
+                                  "",
+                              )}
+                              onChange={(e) =>
+                                setPlanData({
+                                  ...planData,
+                                  [item.a]: e.target.value,
+                                })
+                              }
+                            />
+                            <span>-</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1540,11 +1857,27 @@ export default function StartupNavigator() {
                 ) : (
                   <button
                     className="primary-btn launch-btn"
-                    onClick={() => {
-                      alert(
-                        "宇都宮市 創業計画書の全項目入力が完了しました！\nこの内容で計画書（PDF互換）を生成します。",
-                      );
-                      setView("dashboard");
+                    onClick={async () => {
+                      setLoading(true);
+                      const { error } = await supabase
+                        .from("business_plans")
+                        .upsert(
+                          {
+                            user_id: user.id,
+                            plan_data: planData,
+                            updated_at: new Date().toISOString(),
+                          },
+                          { onConflict: "user_id" },
+                        );
+
+                      setLoading(false);
+                      if (error) {
+                        alert("保存に失敗しました: " + error.message);
+                      } else {
+                        alert("事業計画書を保存しました！");
+                        setView("dashboard");
+                        void loadPlanData();
+                      }
                     }}
                   >
                     作成を完了する
@@ -1557,44 +1890,44 @@ export default function StartupNavigator() {
       </div>
 
       <style jsx>{`
+        /* Base Dashboard Styles */
         .dashboard-root {
           display: flex;
-          flex-direction: column; /* Mobile first: Vertical layout */
+          flex-direction: column;
           min-height: 100vh;
           background: #f8fafc;
         }
 
+        /* Responsive Sidebar / Nav */
         .side-nav {
-          order: 2; /* Move to bottom on mobile */
+          order: 2;
           width: 100%;
           height: 70px;
           background: var(--bg-white);
           border-top: 1px solid var(--border-light);
           display: flex;
-          flex-direction: row; /* Horizontal on mobile */
           align-items: center;
           justify-content: space-around;
-          padding: 0 20px;
+          padding: 0 16px;
           position: fixed;
           bottom: 0;
+          left: 0;
           z-index: 100;
         }
 
         .brand-side {
-          display: none; /* Hide brand icon in mobile bottom nav */
+          display: none;
         }
-
         .nav-items {
           display: flex;
-          flex-direction: row;
-          gap: 20px;
           width: 100%;
           justify-content: space-around;
+          gap: 12px;
         }
 
         .nav-icon {
-          width: 48px;
-          height: 48px;
+          width: 44px;
+          height: 44px;
           border-radius: 12px;
           display: flex;
           align-items: center;
@@ -1602,838 +1935,593 @@ export default function StartupNavigator() {
           border: none;
           background: transparent;
           color: var(--text-muted);
-          cursor: pointer;
-          transition: var(--transition-smooth);
+          transition: all 0.2s;
         }
-
-        .nav-icon:hover {
-          background: var(--bg-soft);
-          color: var(--primary);
-        }
-
         .nav-icon.active {
           background: var(--primary-soft);
           color: var(--primary);
         }
 
-        .profile-trigger {
-          display: none; /* Hide avatar here on mobile */
-        }
-
         .main-content {
           order: 1;
           flex: 1;
-          padding: 24px 16px 100px 16px; /* Extra bottom padding for mobile nav */
+          padding: 24px 16px 100px 16px;
           width: 100%;
-          max-width: 100%;
+          margin: 0 auto;
         }
 
+        /* Section Layouts */
         .content-header {
           display: flex;
-          flex-direction: column; /* Stacked header on mobile */
+          flex-direction: column;
           gap: 16px;
           margin-bottom: 32px;
-          align-items: flex-start;
         }
-
         .header-actions {
           display: flex;
-          width: 100%;
           gap: 12px;
-        }
-
-        .header-actions button {
-          flex: 1;
-        }
-
-        .title-area h1 {
-          font-size: 1.75rem;
-          font-weight: 800;
-        }
-
-        .welcome {
-          color: var(--text-dim);
-          font-size: 0.85rem;
-          margin-top: 4px;
-        }
-
-        .outline-btn {
-          background: transparent;
-          border: 1.5px solid var(--primary);
-          color: var(--primary);
-        }
-
-        .outline-btn:hover {
-          background: var(--primary-soft);
-          color: var(--primary);
-        }
-
-        .stats-grid {
-          display: grid;
-          grid-template-columns: 1fr; /* Single column on mobile */
-          gap: 16px;
-          margin-bottom: 24px;
-        }
-
-        .stat-card {
-          padding: 24px;
-        }
-
-        .stat-header {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          margin-bottom: 16px;
-        }
-
-        .stat-icon-bg {
-          width: 32px;
-          height: 32px;
-          border-radius: 8px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: var(--bg-soft);
-        }
-
-        .stat-label {
-          font-weight: 600;
-          color: var(--text-muted);
-          font-size: 0.8rem;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-
-        .stat-value {
-          font-size: 2rem;
-          font-weight: 800;
-          font-family: var(--font-accent);
-          margin-bottom: 12px;
-        }
-
-        .progress-bar-flat {
-          width: 100%;
-          height: 6px;
-          background: var(--bg-soft);
-          border-radius: 3px;
-          margin-bottom: 8px;
-          overflow: hidden;
-        }
-
-        .progress-bar-flat .fill {
-          height: 100%;
-          background: var(--primary);
-          border-radius: 3px;
-        }
-
-        .stat-hint {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-        }
-
-        .tasks-section {
-          padding: 24px;
+          flex-wrap: wrap;
         }
 
         .section-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 20px;
-        }
-
-        .text-btn {
-          border: none;
-          background: transparent;
-          color: var(--primary);
-          font-weight: 600;
-          cursor: pointer;
-          font-size: 0.85rem;
-        }
-
-        .activity-item {
-          display: flex;
-          align-items: flex-start;
           gap: 12px;
-          padding: 12px 0;
+          margin-bottom: 24px;
+        }
+
+        .section-title {
+          font-size: 1.2rem;
+          font-weight: 800;
+          color: var(--secondary);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0;
+        }
+
+        .stats-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 16px;
+          margin-bottom: 32px;
+        }
+
+        .glass-card {
+          padding: 24px;
+          border-radius: 20px;
+        }
+
+        .stat-card {
+          /* Uses base glass-card padding */
+        }
+        .stat-header {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 16px;
+        }
+        .stat-icon-bg {
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          background: var(--bg-soft);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .stat-label {
+          font-size: 0.85rem;
+          font-weight: 700;
+          color: var(--text-muted);
+        }
+        .stat-value {
+          font-size: 2rem;
+          font-weight: 800;
+          color: var(--secondary);
+          margin: 0;
+        }
+        .stat-hint {
+          font-size: 0.75rem;
+          color: var(--text-dim);
+          margin-top: 8px;
+        }
+
+        .progress-bar-flat {
+          width: 100%;
+          height: 6px;
+          background: #e2e8f0;
+          border-radius: 3px;
+          overflow: hidden;
+          margin: 12px 0 8px 0;
+        }
+        .progress-bar-flat .fill {
+          height: 100%;
+          background: var(--primary);
+          transition: width 0.3s;
+        }
+
+        .outline-btn {
+          background: transparent !important;
+          border: 1px solid var(--primary) !important;
+          color: var(--primary) !important;
+          box-shadow: none !important;
+        }
+        .outline-btn:hover {
+          background: var(--primary-soft) !important;
+        }
+
+        /* Business Plan Summary Specific Fixes */
+        .business-plan-summary {
+          /* Uses base glass-card padding */
+        }
+        .summary-grid {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .summary-item {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding-bottom: 16px;
           border-bottom: 1px solid var(--border-light);
         }
+        .summary-item:last-child {
+          border-bottom: none;
+        }
+        .summary-item h4 {
+          font-size: 0.8rem;
+          font-weight: 700;
+          color: var(--text-muted);
+          margin: 0;
+        }
+        .summary-item p {
+          font-size: 0.95rem;
+          color: var(--secondary);
+          line-height: 1.6;
+          margin: 0;
+          word-break: break-word;
+        }
 
+        /* Wizard Specific */
+        .wizard-container {
+          padding: 24px;
+          border-radius: 20px;
+        }
+        .progress-stepper {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 32px;
+        }
+        .step-dot {
+          flex: 1;
+          height: 6px;
+          background: #e2e8f0;
+          border-radius: 3px;
+        }
+        .step-dot.active {
+          background: var(--primary);
+        }
+
+        .step-body label {
+          display: block;
+          font-weight: 700;
+          padding: 12px 16px;
+          background: #fff3bf;
+          border-radius: 8px;
+          margin-bottom: 20px;
+          font-size: 0.95rem;
+          color: #854d0e;
+        }
+
+        /* Form Tables - Horizontal Scroll on Mobile */
+        .cv-table-container,
+        .finance-table,
+        .outlook-table {
+          width: 100%;
+          overflow-x: auto;
+          background: white;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          margin-bottom: 24px;
+          -webkit-overflow-scrolling: touch;
+        }
+        .table-inner {
+          min-width: 600px;
+        }
+        .table-header-grid {
+          background: #f8fafc;
+          font-weight: 700;
+          grid-template-columns: 120px 1fr;
+        }
+        .table-inner div {
+          padding: 12px;
+          border-right: 1px solid #f1f5f9;
+          display: flex;
+          align-items: center;
+        }
+        .input-flush {
+          border: none;
+          width: 100%;
+          outline: none;
+          background: transparent;
+        }
+
+        .table-header-grid,
+        .table-row-grid,
+        .table-row-grid-3,
+        .table-row-grid-outlook {
+          display: grid;
+          border-bottom: 1px solid #f1f5f9;
+        }
+        .table-row-grid {
+          grid-template-columns: 120px 1fr;
+        }
+        .table-row-grid-3 {
+          grid-template-columns: 120px 1fr 120px;
+        }
+        .table-row-grid-outlook {
+          grid-template-columns: 140px 100px 100px 1fr;
+        }
+
+        /* Booking UI Premium Refactor */
+        .booking-panel {
+          padding: 24px;
+          border-radius: 20px;
+          margin-bottom: 24px;
+        }
+        .panel-header {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 24px;
+        }
+        .panel-num {
+          width: 28px;
+          height: 28px;
+          background: var(--primary);
+          color: white;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 800;
+          font-size: 0.85rem;
+        }
+        .panel-header h3 {
+          margin: 0;
+          font-size: 1.1rem;
+          font-weight: 700;
+        }
+
+        /* 1. Date List */
+        .available-dates-list {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+          gap: 12px;
+        }
+        .date-option-card {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          padding: 16px 8px;
+          background: white;
+          border: 2px solid var(--bg-soft);
+          border-radius: 16px;
+          cursor: pointer;
+          transition: var(--transition-smooth);
+        }
+        .date-option-card:hover {
+          border-color: var(--primary-soft);
+          transform: translateY(-2px);
+          box-shadow: var(--shadow-md);
+        }
+        .date-option-card.active {
+          border-color: var(--primary);
+          background: var(--primary-soft);
+          box-shadow: 0 4px 12px var(--primary-glow);
+        }
+        .date-val-month {
+          font-size: 0.75rem;
+          color: var(--text-dim);
+          font-weight: 600;
+        }
+        .date-val-day {
+          font-size: 1.75rem;
+          font-weight: 800;
+          color: var(--secondary);
+          line-height: 1.2;
+        }
+        .date-val-year {
+          font-size: 0.7rem;
+          color: var(--text-muted);
+        }
+        .date-option-footer {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid var(--bg-soft);
+          width: 100%;
+        }
+        .time-range-hint {
+          font-size: 0.65rem;
+          font-weight: 700;
+          color: var(--accent);
+          background: #ecfdf5;
+          padding: 2px 6px;
+          border-radius: 4px;
+        }
+
+        /* 2. Advisor & Slots */
+        .empty-selection-placeholder {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 60px 20px;
+          color: var(--text-muted);
+          gap: 12px;
+          text-align: center;
+        }
+        .advisors-slots-area {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+        }
+        .advisor-booking-card {
+          background: var(--bg-soft);
+          padding: 20px;
+          border-radius: 16px;
+        }
+        .advisor-header {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 20px;
+        }
+        .advisor-avatar-circle {
+          width: 44px;
+          height: 44px;
+          background: white;
+          color: var(--primary);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 800;
+          font-size: 1.2rem;
+          border: 2px solid white;
+          box-shadow: var(--shadow-sm);
+        }
+        .advisor-meta {
+          display: flex;
+          flex-direction: column;
+        }
+        .advisor-name-label {
+          font-weight: 700;
+          font-size: 1rem;
+          color: var(--secondary);
+        }
+        .advisor-role-label {
+          font-size: 0.75rem;
+          color: var(--text-dim);
+        }
+        .slots-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+          gap: 8px;
+        }
+        .slot-chip {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          padding: 10px 4px;
+          background: white;
+          border: 1px solid transparent;
+          border-radius: 12px;
+          cursor: pointer;
+          transition: var(--transition-smooth);
+        }
+        .slot-chip:hover:not(:disabled) {
+          border-color: var(--primary);
+          transform: scale(1.05);
+          box-shadow: var(--shadow-sm);
+        }
+        .slot-chip.active {
+          background: var(--primary);
+          color: white;
+          transform: scale(1.05);
+          box-shadow: 0 4px 12px var(--primary-glow);
+        }
+        .slot-chip.booked {
+          background: #f1f5f9;
+          color: var(--text-muted);
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+        .time-range-hint.status-off {
+          color: var(--text-muted);
+          background: #f1f5f9;
+        }
+        .date-option-card.disabled-card {
+          opacity: 0.6;
+          cursor: not-allowed;
+          border-color: #eee;
+        }
+        .date-option-card.disabled-card:hover {
+          transform: none;
+          box-shadow: none;
+          border-color: #eee;
+        }
+
+        /* 3. Final Summary */
+        .final-summary-card {
+          background: white;
+          padding: 20px;
+          border-radius: 16px;
+          border: 1px solid var(--bg-soft);
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .summary-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-size: 0.9rem;
+        }
+        .summary-row label {
+          color: var(--text-dim);
+        }
+        .summary-row strong {
+          color: var(--secondary);
+          font-weight: 700;
+        }
+
+        /* Session History */
+        .session-history {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .session-row {
+          background: #fff;
+          padding: 20px;
+          border-radius: 16px;
+          border: 1px solid var(--border-light);
+        }
+        .s-info {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin: 12px 0;
+        }
+        .s-result {
+          font-size: 0.75rem;
+          padding: 4px 12px;
+          border-radius: 99px;
+          font-weight: 700;
+        }
+        .s-result.pass {
+          background: #dcfce7;
+          color: #166534;
+        }
+        .s-result.fail {
+          background: #fee2e2;
+          color: #991b1b;
+        }
+
+        /* Recent Activity */
+        .activity-list {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          margin-top: 8px;
+        }
+        .activity-item {
+          display: flex;
+          gap: 16px;
+          align-items: flex-start;
+        }
         .activity-dot {
           width: 10px;
           height: 10px;
           border-radius: 50%;
           background: var(--primary);
-          margin-top: 4px;
+          margin-top: 6px;
+          flex-shrink: 0;
         }
-
-        .activity-desc {
-          font-size: 0.9rem;
-          font-weight: 500;
-          margin-bottom: 2px;
-        }
-
-        .activity-time {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-        }
-
-        /* Booking / Wizard Common */
-        .booking-view,
-        .wizard-view {
-          width: 100%;
-        }
-        .booking-grid {
+        .activity-info {
           display: flex;
           flex-direction: column;
-          gap: 16px;
-        }
-        .booking-card,
-        .wizard-container {
-          padding: 24px;
-          position: relative;
-        }
-
-        /* Wizard Specific */
-        .progress-stepper {
-          display: flex;
-          gap: 8px;
-          margin-bottom: 24px;
-        }
-        .step-dot {
-          flex: 1;
-          height: 4px;
-          background: var(--bg-soft);
-          border-radius: 2px;
-          transition: background 0.3s ease;
-        }
-
-        .step-dot.active {
-          background: var(--primary);
-        }
-
-        .wizard-content {
-          margin-bottom: 32px;
-        }
-
-        .step-body label {
-          display: block;
-          font-weight: 800;
-          font-size: 1rem;
-          margin-bottom: 8px;
-          padding: 8px 12px;
-          background: #fff3bf; /* Utsunomiya Form Yellow */
-          border-radius: 4px;
-          color: #2b2b2b;
-        }
-
-        .sub-label {
-          display: block;
-          font-size: 0.85rem;
-          font-weight: 700;
-          color: var(--text-muted);
-          margin-bottom: 6px;
-        }
-
-        .form-section {
-          position: relative;
-        }
-
-        /* Table Grid Styles */
-        .cv-table-container,
-        .finance-table,
-        .outlook-table {
-          border: 1px solid #ddd;
-          border-radius: 4px;
-          overflow: hidden;
-          background: white;
-        }
-
-        .table-header-grid,
-        .table-row-grid,
-        .table-header-grid-3,
-        .table-row-grid-3,
-        .table-header-grid-outlook,
-        .table-row-grid-outlook {
-          display: grid;
-          border-bottom: 1px solid #eee;
-        }
-
-        .table-header-grid {
-          grid-template-columns: 100px 1fr;
-          background: #f8f9fa;
-          font-weight: 700;
-          font-size: 0.85rem;
-        }
-        .table-row-grid {
-          grid-template-columns: 100px 1fr;
-        }
-
-        .table-header-grid-3,
-        .table-row-grid-3 {
-          grid-template-columns: 100px 1fr 120px;
-        }
-
-        .table-header-grid-outlook,
-        .table-row-grid-outlook {
-          grid-template-columns: 120px 100px 100px 1fr;
-        }
-
-        .table-header-grid > div,
-        .table-row-grid > div,
-        .table-row-grid > span,
-        .table-header-grid-3 > div,
-        .table-row-grid-3 > div,
-        .table-header-grid-outlook > div,
-        .table-row-grid-outlook > div,
-        .table-row-grid-outlook > span {
-          padding: 10px;
-          border-right: 1px solid #eee;
-          display: flex;
-          align-items: center;
-        }
-
-        .table-row-grid-outlook.header-row {
-          background: #fff9e6;
-          font-weight: 700;
-          grid-template-columns: 1fr;
-        }
-
-        .col-cat-val {
-          background: #fff9e6;
-          font-size: 0.75rem;
-          font-weight: 700;
-        }
-
-        .input-flush {
-          border: none;
-          padding: 10px;
-          width: 100%;
-          font-size: 0.9rem;
-          outline: none;
-          background: transparent;
-        }
-
-        .input-flush:focus {
-          background: #f0f7ff;
-        }
-
-        .grid-3 {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 12px;
-        }
-
-        .input-with-unit {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .input-with-unit span {
-          font-size: 0.85rem;
-          color: var(--text-dim);
-          white-space: nowrap;
-        }
-
-        .input-field-compact {
-          width: 100%;
-          padding: 8px 12px;
-          border: 1px solid var(--border-light);
-          border-radius: 8px;
-          font-size: 0.9rem;
-        }
-
-        .loan-cond-card {
-          background: #f8fafc;
-          border: 1px dashed var(--border-light);
-          border-radius: 12px;
-          padding: 16px;
-        }
-
-        .card-title {
-          font-size: 0.8rem;
-          font-weight: 700;
-          color: var(--text-muted);
-        }
-
-        .mt-12 {
-          margin-top: 12px;
-        }
-        .mt-16 {
-          margin-top: 16px;
-        }
-        .mt-20 {
-          margin-top: 20px;
-        }
-        .mt-24 {
-          margin-top: 24px;
-        }
-        .mt-32 {
-          margin-top: 32px;
-        }
-        .step-dot.active {
-          background: var(--primary);
-        }
-
-        .wizard-content {
-          min-height: 250px; /* Ensure consistent height */
-          margin-bottom: 32px;
-        }
-        .step-body label {
-          display: block;
-          font-weight: 600;
-          margin-bottom: 12px;
-          color: var(--secondary);
-          font-size: 0.95rem;
-        }
-        .mt-20 {
-          margin-top: 20px;
-        }
-        .wizard-actions {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-
-        .calendar-header {
-          margin-bottom: 24px;
-        }
-
-        .calendar-subtext {
-          font-size: 0.8rem;
-          color: var(--text-muted);
-          margin-top: 4px;
-        }
-
-        .calendar-days-grid {
-          display: grid;
-          grid-template-columns: repeat(7, 1fr);
           gap: 4px;
         }
-
-        .weekday-label {
-          text-align: center;
+        .activity-desc {
+          font-size: 0.9rem;
+          font-weight: 600;
+          color: var(--secondary);
+          margin: 0;
+        }
+        .activity-time {
           font-size: 0.75rem;
-          font-weight: 700;
           color: var(--text-dim);
-          padding: 8px 0;
         }
 
-        .date-cell {
-          aspect-ratio: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          border-radius: 8px;
-          border: 1px solid transparent;
-          background: transparent;
-          font-weight: 600;
-          cursor: pointer;
-          transition: var(--transition-smooth);
-          font-size: 0.9rem;
-          color: var(--secondary);
-        }
-
-        .date-cell:hover {
-          background: var(--bg-soft);
-          border-color: var(--border-light);
-        }
-
-        .date-cell.active {
-          background: var(--primary);
-          color: #fff;
-          box-shadow: 0 4px 12px rgba(0, 102, 255, 0.2);
-        }
-
-        .slots-grid {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 10px;
-          margin-top: 20px;
-        }
-
-        .slot-btn {
-          padding: 14px;
-          border-radius: 12px;
-          border: 1px solid var(--border-light);
-          background: var(--bg-white);
-          font-weight: 700;
-          font-size: 0.9rem;
-          cursor: pointer;
-          transition: var(--transition-smooth);
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-
-        .slot-btn:hover:not(:disabled) {
-          border-color: var(--primary);
-          transform: translateY(-2px);
-          box-shadow: var(--shadow-sm);
-        }
-
-        .slot-btn.active {
-          background: var(--primary-soft);
-          border-color: var(--primary);
-          color: var(--primary);
-        }
-
-        .slot-btn.booked {
-          background: #f1f5f9;
-          color: #94a3b8;
-          border-color: #e2e8f0;
-          cursor: not-allowed;
-          font-weight: 400;
-        }
-
-        .booked-mark {
-          font-size: 1.2rem;
-          font-weight: 800;
-          color: #ef4444;
-          line-height: 1;
-        }
-
-        .empty-state {
-          margin-top: 16px;
-          color: var(--text-muted);
-          font-size: 0.85rem;
-          font-style: italic;
-        }
-
-        .summary-details {
-          margin: 16px 0 24px 0;
-        }
-        .detail-item {
-          display: flex;
-          justify-content: space-between;
-          padding: 10px 0;
-          border-bottom: 1px dotted var(--border-light);
-        }
-        .detail-item .label {
-          color: var(--text-dim);
-          font-size: 0.85rem;
-        }
-        .detail-item .val {
-          font-weight: 600;
-          color: var(--secondary);
-          font-size: 0.85rem;
-        }
-
-        .launch-btn {
-          width: 100%;
-          font-size: 1rem;
-          padding: 14px;
-          margin-top: 8px;
-        }
-
-        @keyframes animateUp {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        .animate-in-up {
-          animation: animateUp 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
-        }
-
-        /* Desktop Breakpoint */
+        /* Desktop Adjustments (900px+) */
         @media (min-width: 900px) {
           .dashboard-root {
             flex-direction: row;
           }
-
           .side-nav {
             order: 0;
             width: 80px;
             height: 100vh;
             flex-direction: column;
+            top: 0;
+            padding: 32px 0;
             border-top: none;
             border-right: 1px solid var(--border-light);
             position: sticky;
-            top: 0;
-            padding: 24px 0;
           }
-
-          .brand-side {
-            display: flex;
-            margin-bottom: 60px;
-          }
-
           .nav-items {
             flex-direction: column;
-            gap: 20px;
             width: auto;
           }
-
-          .profile-trigger {
+          .brand-side {
             display: flex;
-            margin-top: auto;
+            margin-bottom: 48px;
           }
-
-          .avatar-small {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #ddd, #eee);
-          }
-
           .main-content {
             padding: 48px 60px;
-            max-width: 1100px;
+            max-width: 1200px;
           }
-
           .content-header {
             flex-direction: row;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 48px;
+            align-items: flex-end;
           }
-
-          .header-actions {
-            width: auto;
-          }
-
-          .title-area h1 {
-            font-size: 2.25rem;
-          }
-
-          .outline-btn {
-            width: auto;
-          }
-
           .stats-grid {
             grid-template-columns: repeat(2, 1fr);
             gap: 24px;
-            margin-bottom: 32px;
           }
-
-          .booking-grid {
+          .summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+          }
+          .summary-item {
+            border-bottom: none;
+          }
+          .booking-layout {
             display: grid;
             grid-template-columns: 1.5fr 1fr;
             gap: 24px;
           }
-
-          .confirm-section {
-            grid-column: span 2;
-          }
-
-          .calendar-grid {
-            grid-template-columns: repeat(7, 1fr);
-            gap: 12px;
-          }
-
-          .date-btn {
-            padding: 16px 8px;
-          }
-
-          .slots-grid {
-            gap: 12px;
-          }
-
-          .slot-btn {
-            padding: 14px;
-          }
-
           .wizard-container {
-            padding: 48px;
+            padding: 40px;
           }
-        }
-
-        /* Responsive Auth adjustments */
-        @media (max-width: 480px) {
-          .auth-card {
-            padding: 24px;
-          }
-          .brand h1 {
+          .section-title {
             font-size: 1.5rem;
           }
         }
 
-        .total-display {
-          padding: 16px;
-          background: var(--bg-soft);
-          border-radius: 12px;
-          text-align: right;
-          font-weight: 800;
-          color: var(--primary);
-          font-size: 1.1rem;
+        /* Print Mode */
+        @media print {
+          .no-print,
+          .side-nav {
+            display: none !important;
+          }
+          .main-content {
+            padding: 0 !important;
+          }
+          .glass-card {
+            box-shadow: none !important;
+            border: 1px solid #eee !important;
+          }
         }
 
-        .field-hint {
-          font-size: 0.8rem;
-          color: var(--text-dim);
-          margin-bottom: 12px;
-          line-height: 1.4;
-        }
-
-        .info-text {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-          background: #fff9db;
-          padding: 8px 12px;
-          border-radius: 6px;
-        }
-
-        .grid-2 {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 16px;
-        }
-
-        .result-card {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 24px;
-          background: var(--primary);
-          border-radius: 16px;
-          color: #fff;
-          box-shadow: 0 10px 20px rgba(0, 102, 255, 0.2);
-        }
-
-        .result-card .price {
-          font-size: 1.5rem;
-          font-weight: 800;
-        }
-
-        .booking-layout {
-          display: flex;
-          flex-direction: column;
-          gap: 20px;
-          padding-bottom: 100px;
-        }
-        .available-dates-list {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 12px;
-          margin-top: 12px;
-        }
-        .date-option-card {
-          padding: 12px 20px;
-          border-radius: 12px;
-          border: 1px solid var(--border-light);
-          background: white;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-        .date-option-card:hover {
-          border-color: var(--primary);
-          background: var(--primary-soft);
-        }
-        .date-option-card.active {
-          background: var(--primary);
-          border-color: var(--primary);
-          color: white;
-        }
-        .date-val {
-          font-weight: 800;
-          font-size: 1.1rem;
-        }
-        .time-range {
-          font-size: 0.75rem;
-          opacity: 0.8;
-        }
-        .advisors-slots-area {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-          margin-top: 16px;
-        }
-        .advisor-slots-row {
-          background: #f8fafc;
-          padding: 12px;
-          border-radius: 12px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .advisor-mini-profile {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .avatar-xs {
-          width: 24px;
-          height: 24px;
-          background: var(--primary-soft);
-          color: var(--primary);
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 0.7rem;
-          font-weight: 800;
-        }
-        .advisor-name {
-          font-weight: 700;
-          font-size: 0.9rem;
-        }
-        .slots-strip {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-        .mini-slot-btn {
-          padding: 6px 12px;
-          border-radius: 8px;
-          border: 1px solid #e2e8f0;
-          background: white;
-          font-size: 0.85rem;
-          font-weight: 600;
-          cursor: pointer;
-          position: relative;
-        }
-        .mini-slot-btn:hover:not(:disabled) {
-          border-color: var(--accent);
-          color: var(--accent);
-        }
-        .mini-slot-btn.active {
-          background: var(--accent);
-          color: white;
-          border-color: var(--accent);
-        }
-        .mini-slot-btn.booked {
-          background: #f1f5f9;
-          color: #cbd5e1;
-          cursor: not-allowed;
-        }
-        .booked-x {
-          font-size: 10px;
-          color: #ef4444;
-          margin-left: 4px;
-        }
-        .final-summary {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          background: #f1f5f9;
-          padding: 16px;
-          border-radius: 12px;
-        }
-        .summary-item {
-          display: flex;
-          justify-content: space-between;
-          font-size: 0.9rem;
-        }
-        .summary-item label {
-          color: var(--text-dim);
-          font-weight: 600;
-        }
-        .summary-item span {
-          font-weight: 800;
-          color: var(--secondary);
-        }
-
-        @keyframes animateUp {
+        @keyframes fadeIn {
           from {
             opacity: 0;
             transform: translateY(10px);
@@ -2443,9 +2531,8 @@ export default function StartupNavigator() {
             transform: translateY(0);
           }
         }
-
         .animate-in-up {
-          animation: animateUp 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+          animation: fadeIn 0.5s ease-out forwards;
         }
       `}</style>
     </div>
