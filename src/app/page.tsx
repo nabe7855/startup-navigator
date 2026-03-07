@@ -227,6 +227,8 @@ export default function StartupNavigator() {
   const [advisorSchedules, setAdvisorSchedules] = useState<any[]>([]);
   const [existingBookings, setExistingBookings] = useState<any[]>([]);
   const [userBookings, setUserBookings] = useState<any[]>([]);
+  const [userPlans, setUserPlans] = useState<any[]>([]);
+  const [recentComments, setRecentComments] = useState<any[]>([]);
 
   useEffect(() => {
     if (view === "booking") {
@@ -240,13 +242,27 @@ export default function StartupNavigator() {
 
   const loadPlanData = async () => {
     if (!user?.id) return;
-    const { data } = await supabase
+    // Load all plans for the user
+    const { data: plans } = await supabase
       .from("business_plans")
       .select("*")
       .eq("user_id", user.id)
-      .maybeSingle();
-    if (data?.plan_data) {
-      setPlanData(data.plan_data as any);
+      .order("updated_at", { ascending: false });
+
+    if (plans && plans.length > 0) {
+      setUserPlans(plans);
+      // For the wizard, just use the first/latest one for now to maintain consistency
+      setPlanData(plans[0].plan_data as any);
+
+      // Load comments for these plans
+      const planIds = plans.map((p: any) => p.id);
+      const { data: comments } = await supabase
+        .from("plan_comments")
+        .select("*, profiles(display_name)")
+        .in("plan_id", planIds)
+        .order("created_at", { ascending: false });
+
+      if (comments) setRecentComments(comments);
     }
   };
 
@@ -890,31 +906,174 @@ export default function StartupNavigator() {
             </section>
             <section
               className="tasks-section glass-card animate-in-up"
-              style={{ animationDelay: "0.4s" }}
+              style={{ animationDelay: "0.4s", marginBottom: "32px" }}
             >
               <div className="section-header">
-                <h3>最近の活動</h3>
-                <button className="text-btn">すべて見る</button>
+                <h3 className="section-title">
+                  <span className="icon">🚀</span> 最近の活動
+                </h3>
               </div>
               <div className="activity-list">
-                <div className="activity-item">
-                  <CheckCircle size={16} color="var(--accent)" />
-                  <div className="activity-info">
-                    <p className="activity-desc">
-                      初回面談 完了: オリエンテーション
-                    </p>
-                    <span className="activity-time">今日 10:00</span>
+                {userBookings.slice(0, 3).map((b) => (
+                  <div key={b.id} className="activity-item">
+                    <CheckCircle
+                      size={16}
+                      color={
+                        b.status === "confirmed" ? "var(--accent)" : "#94a3b8"
+                      }
+                    />
+                    <div className="activity-info">
+                      <p className="activity-desc">
+                        {b.booking_date} のセッション (
+                        {b.status === "confirmed" ? "予約確定" : "完了"})
+                      </p>
+                      <span className="activity-time">{b.start_time}〜</span>
+                    </div>
                   </div>
+                ))}
+                {userBookings.length === 0 && (
+                  <p className="empty-hint">アクティビティはありません。</p>
+                )}
+              </div>
+
+              <div className="notifications-sub-section mt-32">
+                <h4
+                  style={{
+                    fontSize: "0.9rem",
+                    color: "var(--text-dim)",
+                    marginBottom: "16px",
+                    borderBottom: "1px solid #eee",
+                    paddingBottom: "8px",
+                  }}
+                >
+                  🔔 おしらせ
+                </h4>
+                <div className="notification-list">
+                  {recentComments.slice(0, 2).map((c) => (
+                    <div key={c.id} className="notification-item">
+                      <div className="notif-dot"></div>
+                      <p>
+                        <strong>{c.profiles?.display_name || "担当者"}</strong>{" "}
+                        から計画書にコメントが届きました。
+                      </p>
+                    </div>
+                  ))}
+                  {userBookings
+                    .filter(
+                      (b) =>
+                        b.evaluation_result &&
+                        b.evaluation_result !== "pending",
+                    )
+                    .slice(0, 2)
+                    .map((b) => (
+                      <div
+                        key={`notif-eval-${b.id}`}
+                        className="notification-item"
+                      >
+                        <div className="notif-dot blue"></div>
+                        <p>
+                          {b.booking_date} のセッション判定が出ました（
+                          {b.evaluation_result === "pass" ? "合格" : "不合格"}
+                          ）。
+                        </p>
+                      </div>
+                    ))}
+                  {recentComments.length === 0 &&
+                    userBookings.filter(
+                      (b) =>
+                        b.evaluation_result &&
+                        b.evaluation_result !== "pending",
+                    ).length === 0 && (
+                      <p className="empty-hint">新着のおしらせはありません。</p>
+                    )}
                 </div>
-                <div className="activity-item">
-                  <div className="activity-dot"></div>
-                  <div className="activity-info">
-                    <p className="activity-desc">
-                      事業計画書の作成を開始しました
-                    </p>
-                    <span className="activity-time">たった今</span>
-                  </div>
-                </div>
+              </div>
+            </section>
+
+            <section
+              className="glass-card animate-in-up"
+              style={{ animationDelay: "0.5s", marginBottom: "32px" }}
+            >
+              <div className="section-header">
+                <h3 className="section-title">📖 事業計画書一覧</h3>
+              </div>
+              <div className="plan-list-dashboard">
+                {userPlans.length === 0 ? (
+                  <p className="empty-hint">作成済みの計画書はありません。</p>
+                ) : (
+                  userPlans.map((p) => (
+                    <div key={p.id} className="plan-card-mini">
+                      <div className="p-header">
+                        <span className="p-date">
+                          最終更新:{" "}
+                          {new Date(p.updated_at).toLocaleDateString()}
+                        </span>
+                        <Rocket size={16} color="var(--primary)" />
+                      </div>
+                      <div className="p-content">
+                        <h4>{p.plan_data?.motivation?.substring(0, 20)}...</h4>
+                        <div className="p-feedback">
+                          <h5>担当者からのフィードバック:</h5>
+                          {recentComments.filter((c) => c.plan_id === p.id)
+                            .length > 0 ? (
+                            <div className="p-comments">
+                              {recentComments
+                                .filter((c) => c.plan_id === p.id)
+                                .slice(0, 2)
+                                .map((c) => (
+                                  <p key={c.id} className="mini-comment">
+                                    「{c.comment_text.substring(0, 50)}
+                                    {c.comment_text.length > 50 ? "..." : ""}」
+                                  </p>
+                                ))}
+                            </div>
+                          ) : (
+                            <p className="mini-hint">
+                              まだコメントはありません。
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section
+              className="glass-card animate-in-up"
+              style={{ animationDelay: "0.6s", marginBottom: "32px" }}
+            >
+              <div className="section-header">
+                <h3 className="section-title">📅 受講履歴</h3>
+              </div>
+              <div className="course-history-list">
+                {userBookings.length === 0 ? (
+                  <p className="empty-hint">受講履歴はありません。</p>
+                ) : (
+                  userBookings.map((b) => (
+                    <div key={b.id} className="history-row">
+                      <div className="h-main">
+                        <span className="h-date">{b.booking_date}</span>
+                        <span className="h-time">{b.start_time}〜</span>
+                      </div>
+                      <div className="h-meta">
+                        <span
+                          className={`s-result ${b.evaluation_result || "pending"}`}
+                        >
+                          {b.evaluation_result === "pass"
+                            ? "合格"
+                            : b.evaluation_result === "fail"
+                              ? "不合格"
+                              : "受講中"}
+                        </span>
+                        <span className="h-advisor">
+                          担当: {b.profiles?.display_name || "担当者"}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </section>
           </>
@@ -2445,6 +2604,98 @@ export default function StartupNavigator() {
         }
         .activity-time {
           font-size: 0.75rem;
+          color: var(--text-dim);
+        }
+
+        /* Update styles for Dashboard */
+        .notification-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 10px;
+          background: #fdf2f8;
+          border-radius: 12px;
+          margin-bottom: 8px;
+          font-size: 0.85rem;
+        }
+        .notif-dot {
+          width: 8px;
+          height: 8px;
+          background: #db2777;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+        .notif-dot.blue {
+          background: #2563eb;
+        }
+
+        .plan-list-dashboard {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 16px;
+        }
+        .plan-card-mini {
+          background: #f8fafc;
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          padding: 16px;
+        }
+        .p-header {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: 12px;
+          font-size: 0.75rem;
+          color: var(--text-dim);
+        }
+        .p-content h4 {
+          margin: 0 0 12px 0;
+          font-size: 1rem;
+          color: var(--secondary);
+        }
+        .p-feedback h5 {
+          font-size: 0.75rem;
+          color: var(--text-muted);
+          margin-bottom: 8px;
+        }
+        .mini-comment {
+          font-size: 0.8rem;
+          background: white;
+          padding: 8px 12px;
+          border-radius: 8px;
+          border-left: 3px solid var(--primary);
+          margin-bottom: 6px;
+        }
+
+        .course-history-list {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .history-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: #fff;
+          padding: 16px;
+          border-radius: 12px;
+          border: 1px solid #e2e8f0;
+        }
+        .h-date {
+          font-weight: 800;
+          margin-right: 12px;
+        }
+        .h-time {
+          font-size: 0.85rem;
+          color: var(--text-muted);
+        }
+        .h-meta {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 4px;
+        }
+        .h-advisor {
+          font-size: 0.7rem;
           color: var(--text-dim);
         }
 
