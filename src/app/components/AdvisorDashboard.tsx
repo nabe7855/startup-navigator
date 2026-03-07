@@ -2,6 +2,7 @@
 
 import { supabase } from "@/lib/supabase";
 import { BookOpen, Calendar, Save, User } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type AdvisorTab = "profile" | "schedule" | "bookings";
@@ -36,7 +37,13 @@ export default function AdvisorDashboard({
   userId: string;
   onSignOut: () => void;
 }) {
-  const [tab, setTab] = useState<AdvisorTab>("bookings");
+  const pathname = usePathname() || "";
+  const router = useRouter();
+
+  let tab: AdvisorTab = "bookings";
+  if (pathname.includes("/advisor/schedule")) tab = "schedule";
+  else if (pathname.includes("/advisor/profile")) tab = "profile";
+
   const [profile, setProfile] = useState({
     display_name: "",
     bio: "",
@@ -1185,19 +1192,19 @@ export default function AdvisorDashboard({
         <div className="advisor-nav">
           <button
             className={`advisor-nav-item ${tab === "bookings" ? "active" : ""}`}
-            onClick={() => setTab("bookings")}
+            onClick={() => router.push("/advisor")}
           >
             <BookOpen size={18} /> 予約一覧
           </button>
           <button
             className={`advisor-nav-item ${tab === "schedule" ? "active" : ""}`}
-            onClick={() => setTab("schedule")}
+            onClick={() => router.push("/advisor/schedule")}
           >
             <Calendar size={18} /> シフト設定
           </button>
           <button
             className={`advisor-nav-item ${tab === "profile" ? "active" : ""}`}
-            onClick={() => setTab("profile")}
+            onClick={() => router.push("/advisor/profile")}
           >
             <User size={18} /> プロフィール
           </button>

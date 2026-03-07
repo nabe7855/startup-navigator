@@ -9,6 +9,7 @@ import {
   Settings,
   Users,
 } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 type OperatingHour = {
@@ -42,7 +43,14 @@ export default function AdminDashboard({
 }: {
   onSignOut: () => void;
 }) {
-  const [tab, setTab] = useState<AdminTab>("hours");
+  const pathname = usePathname() || "";
+  const router = useRouter();
+
+  let tab: AdminTab = "hours";
+  if (pathname.includes("/admin/advisors")) tab = "advisors";
+  else if (pathname.includes("/admin/calendar")) tab = "calendar";
+  else if (pathname.includes("/admin/students")) tab = "students";
+
   const [hours, setHours] = useState<OperatingHour[]>([]);
   const [advisors, setAdvisors] = useState<AdvisorProfile[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -238,25 +246,25 @@ export default function AdminDashboard({
         <div className="admin-nav">
           <button
             className={`admin-nav-item ${tab === "hours" ? "active" : ""}`}
-            onClick={() => setTab("hours")}
+            onClick={() => router.push("/admin")}
           >
             <Calendar size={18} /> 予約可能日設定
           </button>
           <button
             className={`admin-nav-item ${tab === "calendar" ? "active" : ""}`}
-            onClick={() => setTab("calendar")}
+            onClick={() => router.push("/admin/calendar")}
           >
             <Calendar size={18} /> スケジュール管理
           </button>
           <button
             className={`admin-nav-item ${tab === "advisors" ? "active" : ""}`}
-            onClick={() => setTab("advisors")}
+            onClick={() => router.push("/admin/advisors")}
           >
             <Users size={18} /> 担当者管理
           </button>
           <button
             className={`admin-nav-item ${tab === "students" ? "active" : ""}`}
-            onClick={() => setTab("students")}
+            onClick={() => router.push("/admin/students")}
           >
             <Users size={18} /> 受講生一覧
           </button>
