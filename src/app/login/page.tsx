@@ -175,7 +175,7 @@ export default function LoginPage() {
               <input
                 type="text"
                 className="input-field"
-                placeholder="宇都宮 太郎"
+                placeholder="宇都宮"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 required={!isLogin}
