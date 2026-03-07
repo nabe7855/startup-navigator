@@ -25,7 +25,7 @@ export default function UserLayout({
           .from("profiles")
           .select("role")
           .eq("id", session.user.id)
-          .single()
+          .maybeSingle()
           .then(({ data }) => {
             const role = data?.role || "user";
             setUser({
