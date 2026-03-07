@@ -1617,6 +1617,11 @@ export default function UserDashboard({
               </div>
               <h2>{selectedProfileAdvisor.display_name}</h2>
               <p className="p-modal-email">{selectedProfileAdvisor.email}</p>
+              {selectedProfileAdvisor.bio && (
+                <div className="p-modal-bio">
+                  <p>{selectedProfileAdvisor.bio}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2169,6 +2174,18 @@ export default function UserDashboard({
           color: var(--text-muted);
           font-size: 0.95rem;
           margin: 0;
+          margin-bottom: 24px;
+        }
+        .p-modal-bio {
+          text-align: left;
+          background: #f1f5f9;
+          padding: 16px;
+          border-radius: 12px;
+          width: 100%;
+          font-size: 0.95rem;
+          line-height: 1.6;
+          color: var(--secondary);
+          white-space: pre-wrap;
         }
         .time-range-hint.status-off {
           color: var(--text-muted);
